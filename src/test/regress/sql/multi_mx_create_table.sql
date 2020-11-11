@@ -427,3 +427,16 @@ WITH shard_counts AS (
 SELECT logicalrelid, colocationid, shard_count, partmethod, repmodel
 FROM pg_dist_partition NATURAL JOIN shard_counts
 ORDER BY colocationid, logicalrelid;
+
+-- check the citus_tables view
+SELECT table_name, table_type, distribution_column, shard_count
+FROM citus_tables
+ORDER BY table_name::text;
+
+\c - - - :worker_1_port
+
+SELECT table_name, table_type, distribution_column, shard_count
+FROM citus_tables
+ORDER BY table_name::text;
+
+

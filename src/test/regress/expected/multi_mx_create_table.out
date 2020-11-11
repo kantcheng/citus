@@ -484,3 +484,65 @@ ORDER BY colocationid, logicalrelid;
  articles_single_shard_hash_mx                          |      1390011 |           1 | h          | s
 (23 rows)
 
+-- check the citus_tables view
+SELECT table_name, table_type, distribution_column, shard_count
+FROM citus_tables
+ORDER BY table_name::text;
+                       table_name                       | table_type  | distribution_column | shard_count
+---------------------------------------------------------------------
+ app_analytics_events_mx                                | distributed | app_id              |           4
+ articles_hash_mx                                       | distributed | author_id           |           2
+ articles_single_shard_hash_mx                          | distributed | author_id           |           1
+ citus_mx_test_schema.nation_hash                       | distributed | n_nationkey         |          16
+ citus_mx_test_schema.nation_hash_collation_search_path | distributed | n_nationkey         |           4
+ citus_mx_test_schema.nation_hash_composite_types       | distributed | n_nationkey         |           4
+ citus_mx_test_schema_join_1.nation_hash                | distributed | n_nationkey         |           4
+ citus_mx_test_schema_join_1.nation_hash_2              | distributed | n_nationkey         |           4
+ citus_mx_test_schema_join_2.nation_hash                | distributed | n_nationkey         |           4
+ company_employees_mx                                   | distributed | company_id          |           4
+ customer_mx                                            | reference   |                     |           1
+ labs_mx                                                | distributed | id                  |           1
+ limit_orders_mx                                        | distributed | id                  |           2
+ lineitem_mx                                            | distributed | l_orderkey          |          16
+ multiple_hash_mx                                       | distributed | category            |           2
+ mx_ddl_table                                           | distributed | key                 |           4
+ nation_hash                                            | distributed | n_nationkey         |          16
+ nation_mx                                              | reference   |                     |           1
+ objects_mx                                             | distributed | id                  |           1
+ orders_mx                                              | distributed | o_orderkey          |          16
+ part_mx                                                | reference   |                     |           1
+ researchers_mx                                         | distributed | lab_id              |           2
+ supplier_mx                                            | reference   |                     |           1
+(23 rows)
+
+\c - - - :worker_1_port
+SELECT table_name, table_type, distribution_column, shard_count
+FROM citus_tables
+ORDER BY table_name::text;
+                       table_name                       | table_type  | distribution_column | shard_count
+---------------------------------------------------------------------
+ app_analytics_events_mx                                | distributed | app_id              |           4
+ articles_hash_mx                                       | distributed | author_id           |           2
+ articles_single_shard_hash_mx                          | distributed | author_id           |           1
+ citus_mx_test_schema.nation_hash                       | distributed | n_nationkey         |          16
+ citus_mx_test_schema.nation_hash_collation_search_path | distributed | n_nationkey         |           4
+ citus_mx_test_schema.nation_hash_composite_types       | distributed | n_nationkey         |           4
+ citus_mx_test_schema_join_1.nation_hash                | distributed | n_nationkey         |           4
+ citus_mx_test_schema_join_1.nation_hash_2              | distributed | n_nationkey         |           4
+ citus_mx_test_schema_join_2.nation_hash                | distributed | n_nationkey         |           4
+ company_employees_mx                                   | distributed | company_id          |           4
+ customer_mx                                            | reference   |                     |           1
+ labs_mx                                                | distributed | id                  |           1
+ limit_orders_mx                                        | distributed | id                  |           2
+ lineitem_mx                                            | distributed | l_orderkey          |          16
+ multiple_hash_mx                                       | distributed | category            |           2
+ mx_ddl_table                                           | distributed | key                 |           4
+ nation_hash                                            | distributed | n_nationkey         |          16
+ nation_mx                                              | reference   |                     |           1
+ objects_mx                                             | distributed | id                  |           1
+ orders_mx                                              | distributed | o_orderkey          |          16
+ part_mx                                                | reference   |                     |           1
+ researchers_mx                                         | distributed | lab_id              |           2
+ supplier_mx                                            | reference   |                     |           1
+(23 rows)
+
