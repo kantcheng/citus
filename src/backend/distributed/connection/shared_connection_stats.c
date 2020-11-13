@@ -23,6 +23,7 @@
 #include "access/htup_details.h"
 #include "catalog/pg_authid.h"
 #include "commands/dbcommands.h"
+#include "distributed/backend_data.h"
 #include "distributed/cancel_utils.h"
 #include "distributed/connection_management.h"
 #include "distributed/listutils.h"
@@ -270,6 +271,19 @@ TryToIncrementSharedConnectionCounter(const char *hostname, int port)
 	connKey.port = port;
 	connKey.databaseOid = MyDatabaseId;
 
+	/*
+	 * TODO: Would calling FindWorkerNode() on every connection attempt
+	 * be a bottleneck? If so, avoid.
+	 */
+	bool connectionToLocalNode = false;
+	int activeBackendCount = 0;
+	WorkerNode *workerNode = FindWorkerNode(hostname, port);
+	if (workerNode)
+	{
+		connectionToLocalNode = workerNode->groupId == GetLocalGroupId();
+		activeBackendCount = GetAllActiveClientBackendCount();
+	}
+
 	LockConnectionSharedMemory(LW_EXCLUSIVE);
 
 	/*
@@ -299,6 +313,19 @@ TryToIncrementSharedConnectionCounter(const char *hostname, int port)
 		connectionEntry->connectionCount = 1;
 
 		counterIncremented = true;
+	}
+	else if (connectionToLocalNode &&
+			 activeBackendCount > MaxConnections * LOCAL_NODE_REMOTE_CONNECTION_FACTOR)
+	{
+		/*
+		 * For local nodes, relying on citus.max_shared_pool_size might not be
+		 * ideal. The reason is that the client backends that are running
+		 * distribueted queries and the client backends that Citus use to
+		 * parallelize the execution compete to get the slots on max_connections.
+		 * That's why limiting the number of remote connections based on
+		 * max_connections would prevent connection errors.
+		 */
+		counterIncremented = false;
 	}
 	else if (connectionEntry->connectionCount + 1 > GetMaxSharedPoolSize())
 	{
@@ -618,7 +645,7 @@ SharedConnectionStatsShmemInit(void)
  * optional connections.
  */
 int
-AdaptiveConnectionManagementFlag(int activeConnectionCount)
+AdaptiveConnectionManagementFlag(bool connectToLocalNode, int activeConnectionCount)
 {
 	if (UseConnectionPerPlacement())
 	{
@@ -632,6 +659,14 @@ AdaptiveConnectionManagementFlag(int activeConnectionCount)
 		 * in the shared connection counters.
 		 */
 		return 0;
+	}
+	else if (connectToLocalNode)
+	{
+		/*
+		 * Connection to local node is always optional because the executor is capable
+		 * of falling back to local execution.
+		 */
+		return OPTIONAL_CONNECTION;
 	}
 	else if (ShouldWaitForConnection(activeConnectionCount))
 	{

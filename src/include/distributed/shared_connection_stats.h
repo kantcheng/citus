@@ -13,6 +13,7 @@
 
 #define ADJUST_POOLSIZE_AUTOMATICALLY 0
 #define DISABLE_CONNECTION_THROTTLING -1
+#define LOCAL_NODE_REMOTE_CONNECTION_FACTOR 0.90
 
 
 extern int MaxSharedPoolSize;
@@ -26,6 +27,7 @@ extern bool TryToIncrementSharedConnectionCounter(const char *hostname, int port
 extern void WaitLoopForSharedConnection(const char *hostname, int port);
 extern void DecrementSharedConnectionCounter(const char *hostname, int port);
 extern void IncrementSharedConnectionCounter(const char *hostname, int port);
-extern int AdaptiveConnectionManagementFlag(int activeConnectionCount);
+extern int AdaptiveConnectionManagementFlag(bool connectToLocalNode, int
+											activeConnectionCount);
 
 #endif /* SHARED_CONNECTION_STATS_H */
