@@ -693,6 +693,17 @@ RegisterCitusConfigVariables(void)
 		GUC_NO_SHOW_ALL,
 		NoticeIfSubqueryPushdownEnabled, NULL, NULL);
 
+	DefineCustomRealVariable(
+		"citus.local_node_parallel_execution_factor",
+		gettext_noop("TODO:"),
+		NULL,
+		&LocalNodeParallelExecutionFactor,
+		0.50, 0.0, 1.0,
+		PGC_SIGHUP,
+		GUC_STANDARD,
+		NULL, NULL, NULL);
+
+
 	DefineCustomBoolVariable(
 		"citus.log_multi_join_order",
 		gettext_noop("Logs the distributed join order to the server log."),

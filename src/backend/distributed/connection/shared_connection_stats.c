@@ -23,6 +23,7 @@
 #include "access/htup_details.h"
 #include "catalog/pg_authid.h"
 #include "commands/dbcommands.h"
+#include "distributed/backend_data.h"
 #include "distributed/cancel_utils.h"
 #include "distributed/connection_management.h"
 #include "distributed/listutils.h"
@@ -96,6 +97,11 @@ typedef struct SharedConnStatsHashEntry
  * Anything else means use that number
  */
 int MaxSharedPoolSize = 0;
+
+/*
+ *
+ */
+double LocalNodeParallelExecutionFactor = 0.50;
 
 
 /* the following two structs are used for accessing shared memory */
@@ -270,6 +276,16 @@ TryToIncrementSharedConnectionCounter(const char *hostname, int port)
 	connKey.port = port;
 	connKey.databaseOid = MyDatabaseId;
 
+	/* calculate these values before the lock is acquired */
+	bool connectionToLocalNode = false;
+	int activeBackendCount = 0;
+	WorkerNode *workerNode = FindWorkerNode(hostname, port);
+	if (workerNode)
+	{
+		connectionToLocalNode = (workerNode->groupId == GetLocalGroupId());
+		activeBackendCount = GetAllActiveClientBackendCount();
+	}
+
 	LockConnectionSharedMemory(LW_EXCLUSIVE);
 
 	/*
@@ -299,6 +315,35 @@ TryToIncrementSharedConnectionCounter(const char *hostname, int port)
 		connectionEntry->connectionCount = 1;
 
 		counterIncremented = true;
+	}
+	else if (connectionToLocalNode)
+	{
+		/*
+		 * For local nodes, solely relying on citus.max_shared_pool_size or
+		 * max_connections might not be sufficient. The former gives us
+		 * a preview of the future (e.g., we let the new connections to establish,
+		 * but they are not established yet). The latter gives us the close to
+		 * precise view of the past (e.g., the active number of client backends).
+		 *
+		 * Overall, we want to limit both of the metrics. The former limit typically
+		 * kics in under regular loads, where the load of the database increases in
+		 * a reasonable pace. The latter limit typically kicks in when the database
+		 * is issued lots of concurrent sessions at the same time, such as benchmarks.
+		 */
+		if (activeBackendCount + 1 > (MaxConnections * LocalNodeParallelExecutionFactor))
+		{
+			counterIncremented = false;
+		}
+		else if (connectionEntry->connectionCount + 1 > (GetMaxSharedPoolSize() *
+														 LocalNodeParallelExecutionFactor))
+		{
+			counterIncremented = false;
+		}
+		else
+		{
+			connectionEntry->connectionCount++;
+			counterIncremented = true;
+		}
 	}
 	else if (connectionEntry->connectionCount + 1 > GetMaxSharedPoolSize())
 	{
@@ -618,7 +663,7 @@ SharedConnectionStatsShmemInit(void)
  * optional connections.
  */
 int
-AdaptiveConnectionManagementFlag(int activeConnectionCount)
+AdaptiveConnectionManagementFlag(bool connectToLocalNode, int activeConnectionCount)
 {
 	if (UseConnectionPerPlacement())
 	{
@@ -632,6 +677,14 @@ AdaptiveConnectionManagementFlag(int activeConnectionCount)
 		 * in the shared connection counters.
 		 */
 		return 0;
+	}
+	else if (connectToLocalNode)
+	{
+		/*
+		 * Connection to local node is always optional because the executor is capable
+		 * of falling back to local execution.
+		 */
+		return OPTIONAL_CONNECTION;
 	}
 	else if (ShouldWaitForConnection(activeConnectionCount))
 	{
