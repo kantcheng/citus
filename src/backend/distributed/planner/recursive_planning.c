@@ -211,6 +211,8 @@ static Query * BuildReadIntermediateResultsQuery(List *targetEntryList,
 												 Const *resultIdConst, Oid functionOid,
 												 bool useBinaryCopyFormat);
 
+static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList);
+
 /*
  * GenerateSubplansForSubqueriesAndCTEs is a wrapper around RecursivelyPlanSubqueriesAndCTEs.
  * The function returns the subplans if necessary. For the details of when/how subplans are
@@ -1387,22 +1389,7 @@ ConvertLocalTableJoinsToSubqueries(Query *query,
 								   RecursivePlanningContext *context)
 {
 	List *rangeTableList = query->rtable;
-
-	if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_NEVER)
-	{
-		/* user doesn't want Citus to enable local table joins */
-		return;
-	}
-
-	if (!ContainsLocalTableDistributedTableJoin(rangeTableList))
-	{
-		/* nothing to do as there are no relevant joins */
-		return;
-	}
-
-	if (AllDataLocallyAccessible(rangeTableList))
-	{
-		/* recursively planning is overkill, router planner can already handle this */
+	if(!ShouldConvertLocalTableJoinsToSubqueries(rangeTableList)) {
 		return;
 	}
 
@@ -1501,6 +1488,31 @@ ConvertLocalTableJoinsToSubqueries(Query *query,
 			elog(ERROR, "unexpected local table join policy: %d", LocalTableJoinPolicy);
 		}
 	}
+}
+
+/*
+ * ShouldConvertLocalTableJoinsToSubqueries returns true if we should
+ * convert local-dist table joins to subqueries.
+ */
+static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList) {
+	if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_NEVER)
+	{
+		/* user doesn't want Citus to enable local table joins */
+		return false;
+	}
+
+	if (!ContainsLocalTableDistributedTableJoin(rangeTableList))
+	{
+		/* nothing to do as there are no relevant joins */
+		return false;
+	}
+
+	if (AllDataLocallyAccessible(rangeTableList))
+	{
+		/* recursively planning is overkill, router planner can already handle this */
+		return false;
+	}
+	return true;
 }
 
 
@@ -1714,8 +1726,8 @@ ContainsLocalTableDistributedTableJoin(List *rangeTableList)
 		RangeTblEntry *rangeTableEntry = (RangeTblEntry *) lfirst(rangeTableCell);
 
 		/* we're only interested in tables */
-		if (!(rangeTableEntry->rtekind == RTE_RELATION &&
-			  rangeTableEntry->relkind == RELKIND_RELATION))
+		if (rangeTableEntry->rtekind != RTE_RELATION ||
+			  rangeTableEntry->relkind != RELKIND_RELATION)
 		{
 			continue;
 		}
@@ -1729,14 +1741,9 @@ ContainsLocalTableDistributedTableJoin(List *rangeTableList)
 		{
 			containsLocalTable = true;
 		}
-
-		if (containsLocalTable && containsDistributedTable)
-		{
-			return true;
-		}
 	}
 
-	return false;
+	return containsLocalTable && containsDistributedTable;
 }
 
 
