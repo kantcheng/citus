@@ -195,7 +195,7 @@ static void ConvertLocalTableJoinsToSubqueries(Query *query,
 											   RecursivePlanningContext *planningContext);
 static List * RequiredAttrNumbersForRelation(RangeTblEntry *relationRte,
 											 RecursivePlanningContext *planningContext);
-static RangeTblEntry * MostFilteredRte(PlannerRestrictionContext *
+static RangeTblEntry * FindNextRTECandidate(PlannerRestrictionContext *
 									   plannerRestrictionContext,
 									   List *rangeTableList, List **restrictionList,
 									   bool localTable);
@@ -212,7 +212,10 @@ static Query * BuildReadIntermediateResultsQuery(List *targetEntryList,
 												 bool useBinaryCopyFormat);
 
 static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList);
-
+static bool HasUniqueFilter(RangeTblEntry* distRTE, List* distRTERestrictionList);
+static void AutoConvertLocalTableJoinToSubquery(RangeTblEntry* localRTE, RangeTblEntry* distRTE,
+		List* localRTERestrictionList, List* distRTERestrictionList,
+		List *requiredAttrNumbersForLocalRTE, List *requiredAttrNumbersForDistRTE);
 /*
  * GenerateSubplansForSubqueriesAndCTEs is a wrapper around RecursivelyPlanSubqueriesAndCTEs.
  * The function returns the subplans if necessary. For the details of when/how subplans are
@@ -1405,15 +1408,15 @@ ConvertLocalTableJoinsToSubqueries(Query *query,
 		PlannerRestrictionContext *plannerRestrictionContext =
 			context->plannerRestrictionContext;
 		RangeTblEntry *mostFilteredLocalRte =
-			MostFilteredRte(plannerRestrictionContext, rangeTableList,
+			FindNextRTECandidate(plannerRestrictionContext, rangeTableList,
 							&localTableRestrictList, localTable);
 		RangeTblEntry *mostFilteredDistributedRte =
-			MostFilteredRte(plannerRestrictionContext, rangeTableList,
+			FindNextRTECandidate(plannerRestrictionContext, rangeTableList,
 							&distributedTableRestrictList, !localTable);
 
 		List *requiredAttrNumbersForLocalRte =
 			RequiredAttrNumbersForRelation(mostFilteredLocalRte, context);
-		List *requiredAttrNumbersForDistriutedRte =
+		List *requiredAttrNumbersForDistributedRte =
 			RequiredAttrNumbersForRelation(mostFilteredDistributedRte, context);
 
 
@@ -1422,66 +1425,38 @@ ConvertLocalTableJoinsToSubqueries(Query *query,
 		elog(DEBUG4, "Distributed relation with the most number of filters "
 					 "on it: \"%s\"", get_rel_name(mostFilteredDistributedRte->relid));
 
-		if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_PULL_LOCAL)
+		if (resultRelation) {
+
+			if (resultRelation->relid == mostFilteredLocalRte->relid) {
+				ReplaceRTERelationWithRteSubquery(mostFilteredDistributedRte,
+										distributedTableRestrictList,
+										requiredAttrNumbersForDistributedRte);
+				continue;						
+			}else if (resultRelation->relid == mostFilteredDistributedRte->relid) {
+				ReplaceRTERelationWithRteSubquery(mostFilteredLocalRte,
+										localTableRestrictList,
+										requiredAttrNumbersForLocalRte);
+				continue;						
+			}
+		}
+
+		if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_PREFER_LOCAL)
 		{
 			ReplaceRTERelationWithRteSubquery(mostFilteredLocalRte,
 											  localTableRestrictList,
 											  requiredAttrNumbersForLocalRte);
 		}
-		else if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_PULL_DISTRIBUTED)
+		else if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_PREFER_DISTRIBUTED)
 		{
 			ReplaceRTERelationWithRteSubquery(mostFilteredDistributedRte,
 											  distributedTableRestrictList,
-											  requiredAttrNumbersForDistriutedRte);
+											  requiredAttrNumbersForDistributedRte);
 		}
 		else if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_AUTO)
 		{
-			bool localTableHasFilter = list_length(localTableRestrictList) > 0;
-			bool distributedTableHasFilter =
-				list_length(distributedTableRestrictList) > 0;
-
-			if (resultRelation && resultRelation->relid == mostFilteredLocalRte->relid &&
-				!mostFilteredLocalRte->inFromCl)
-			{
-				/*
-				 * We cannot recursively plan result relation, we have to
-				 * recursively plan the distributed table.
-				 *
-				 * TODO: A future improvement could be to pick the next most filtered
-				 * local relation, if exists.
-				 */
-				ReplaceRTERelationWithRteSubquery(mostFilteredDistributedRte,
-												  distributedTableRestrictList,
-												  requiredAttrNumbersForDistriutedRte);
-			}
-			else if (localTableHasFilter || !distributedTableHasFilter)
-			{
-				/*
-				 * First, favor recursively planning local table when it has a filter.
-				 * The rationale is that local tables are small, and at least one filter
-				 * they become even smaller. On each iteration, we pick the local table
-				 * with the most filters (e.g., WHERE clause entries). Note that the filters
-				 * don't need to be directly on the table in the query tree, instead we use
-				 * Postgres' filters where filters can be pushed down tables via filters.
-				 *
-				 * Second, if a distributed table doesn't have a filter, we do not ever
-				 * prefer recursively planning that. Instead, we recursively plan the
-				 * local table, assuming that it is smaller.
-				 *
-				 * TODO: If we have better statistics on how many tuples each table returns
-				 * considering the filters on them, we should pick the table with least
-				 * tuples. Today, we do not have such an infrastructure.
-				 */
-				ReplaceRTERelationWithRteSubquery(mostFilteredLocalRte,
-												  localTableRestrictList,
-												  requiredAttrNumbersForLocalRte);
-			}
-			else
-			{
-				ReplaceRTERelationWithRteSubquery(mostFilteredDistributedRte,
-												  distributedTableRestrictList,
-												  requiredAttrNumbersForDistriutedRte);
-			}
+			AutoConvertLocalTableJoinToSubquery(mostFilteredLocalRte, mostFilteredDistributedRte,
+				localTableRestrictList, distributedTableRestrictList, 
+				requiredAttrNumbersForLocalRte, requiredAttrNumbersForDistributedRte);
 		}
 		else
 		{
@@ -1512,6 +1487,27 @@ static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList) {
 		/* recursively planning is overkill, router planner can already handle this */
 		return false;
 	}
+	return true;
+}
+
+static void AutoConvertLocalTableJoinToSubquery(RangeTblEntry* localRTE, RangeTblEntry* distRTE,
+		List* localRTERestrictionList, List* distRTERestrictionList,
+		List *requiredAttrNumbersForLocalRTE, List *requiredAttrNumbersForDistRTE) {
+
+	bool hasUniqueFilter = HasUniqueFilter(distRTE, distRTERestrictionList);
+	if (hasUniqueFilter) {
+		ReplaceRTERelationWithRteSubquery(distRTE,
+									distRTERestrictionList,
+									requiredAttrNumbersForDistRTE);
+	}else {
+		ReplaceRTERelationWithRteSubquery(localRTE,
+											localRTERestrictionList,
+											requiredAttrNumbersForLocalRTE);
+	}
+	
+}
+
+static bool HasUniqueFilter(RangeTblEntry* distRTE, List* distRTERestrictionList) {
 	return true;
 }
 
@@ -1567,19 +1563,17 @@ RequiredAttrNumbersForRelation(RangeTblEntry *relationRte,
 
 
 /*
- * MostFilteredRte returns a range table entry which has the most filters
+ * FindNextRTECandidate returns a range table entry which has the most filters
  * on it along with the restrictions (e.g., fills **restrictionList).
  *
  * The function also gets a boolean localTable parameter, so the caller
  * can choose to run the function for only local tables or distributed tables.
  */
 static RangeTblEntry *
-MostFilteredRte(PlannerRestrictionContext *plannerRestrictionContext,
+FindNextRTECandidate(PlannerRestrictionContext *plannerRestrictionContext,
 				List *rangeTableList, List **restrictionList,
 				bool localTable)
 {
-	RangeTblEntry *mostFilteredLocalRte = NULL;
-
 	ListCell *rangeTableCell = NULL;
 
 	foreach(rangeTableCell, rangeTableList)
@@ -1607,16 +1601,12 @@ MostFilteredRte(PlannerRestrictionContext *plannerRestrictionContext,
 			GetRestrictInfoListForRelation(rangeTableEntry,
 										   plannerRestrictionContext, 1);
 
-		if (mostFilteredLocalRte == NULL ||
-			list_length(*restrictionList) < list_length(currentRestrictionList) ||
-			ContainsFalseClause(currentRestrictionList))
-		{
-			mostFilteredLocalRte = rangeTableEntry;
-			*restrictionList = currentRestrictionList;
-		}
+		*restrictionList = currentRestrictionList;
+		return rangeTableEntry;
 	}
-
-	return mostFilteredLocalRte;
+	// TODO:: Put Illegal state error code
+	ereport(ERROR, (errmsg("unexpected state: could not find any RTE to convert to subquery in range table list")));
+	return NULL;
 }
 
 

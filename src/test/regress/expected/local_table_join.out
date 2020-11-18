@@ -23,7 +23,7 @@ ERROR:  relation postgres_table is not distributed
 SELECT count(*) FROM postgres_table JOIN reference_table USING(key);
 ERROR:  relation postgres_table is not distributed
 -- the user prefers local table recursively planned
-SET citus.local_table_join_policy TO 'pull-local';
+SET citus.local_table_join_policy TO 'prefer-local';
 SELECT count(*) FROM postgres_table JOIN distributed_table USING(key);
 DEBUG:  Wrapping local relation "postgres_table" to a subquery: SELECT key, NULL::text AS value, NULL::jsonb AS value_2 FROM local_table_join.postgres_table WHERE true OFFSET 0
 DEBUG:  generating subplan XXX_1 for subquery SELECT key, NULL::text AS value, NULL::jsonb AS value_2 FROM local_table_join.postgres_table WHERE true OFFSET 0
@@ -43,7 +43,7 @@ DEBUG:  Plan XXX query after replacing subqueries and CTEs: SELECT count(*) AS c
 (1 row)
 
 -- the user prefers distributed table recursively planned
-SET citus.local_table_join_policy TO 'pull-distributed';
+SET citus.local_table_join_policy TO 'prefer-distributed';
 SELECT count(*) FROM postgres_table JOIN distributed_table USING(key);
 DEBUG:  Wrapping local relation "distributed_table" to a subquery: SELECT key, NULL::text AS value, NULL::jsonb AS value_2 FROM local_table_join.distributed_table WHERE true OFFSET 0
 DEBUG:  generating subplan XXX_1 for subquery SELECT key, NULL::text AS value, NULL::jsonb AS value_2 FROM local_table_join.distributed_table WHERE true OFFSET 0

@@ -17,13 +17,13 @@ SELECT count(*) FROM postgres_table JOIN distributed_table USING(key);
 SELECT count(*) FROM postgres_table JOIN reference_table USING(key);
 
 -- the user prefers local table recursively planned
-SET citus.local_table_join_policy TO 'pull-local';
+SET citus.local_table_join_policy TO 'prefer-local';
 SELECT count(*) FROM postgres_table JOIN distributed_table USING(key);
 SELECT count(*) FROM postgres_table JOIN reference_table USING(key);
 
 
 -- the user prefers distributed table recursively planned
-SET citus.local_table_join_policy TO 'pull-distributed';
+SET citus.local_table_join_policy TO 'prefer-distributed';
 SELECT count(*) FROM postgres_table JOIN distributed_table USING(key);
 SELECT count(*) FROM postgres_table JOIN reference_table USING(key);
 
