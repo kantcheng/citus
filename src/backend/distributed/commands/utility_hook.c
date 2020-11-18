@@ -75,7 +75,6 @@ static int activeDropSchemaOrDBs = 0;
 
 
 /* Local functions forward declarations for helper functions */
-static void ExecuteDistributedDDLJob(DDLJob *ddlJob);
 static char * SetSearchPathToCurrentSearchPathCommand(void);
 static char * CurrentSearchPath(void);
 static void IncrementUtilityHookCountersIfNecessary(Node *parsetree);
@@ -645,7 +644,7 @@ IsDropSchemaOrDB(Node *parsetree)
  * a partitioned table which has replication factor > 1.
  *
  */
-static void
+void
 ExecuteDistributedDDLJob(DDLJob *ddlJob)
 {
 	bool shouldSyncMetadata = false;
@@ -741,6 +740,57 @@ ExecuteDistributedDDLJob(DDLJob *ddlJob)
 		}
 		PG_END_TRY();
 	}
+}
+
+
+DDLJob *
+CreateCustomDDLTaskList(Oid relationId, GenerateDDLCommandForShardFn fn,
+						void *context)
+{
+	List *taskList = NIL;
+	List *shardIntervalList = LoadShardIntervalList(relationId);
+	uint64 jobId = INVALID_JOB_ID;
+	Oid namespace = get_rel_namespace(relationId);
+	char *namespaceName = get_namespace_name(namespace);
+	int taskId = 1;
+
+	/* lock metadata before getting placement lists */
+	LockShardListMetadata(shardIntervalList, ShareLock);
+
+	ShardInterval *shardInterval = NULL;
+	foreach_ptr(shardInterval, shardIntervalList)
+	{
+		uint64 shardId = shardInterval->shardId;
+
+		/* prepare the shardname to send the command to */
+		char *name = get_rel_name(relationId);
+		AppendShardIdToName(&name, shardId);
+
+		name = quote_qualified_identifier(namespaceName, name);
+
+		Task *task = CitusMakeNode(Task);
+		task->jobId = jobId;
+		task->taskId = taskId++;
+		task->taskType = DDL_TASK;
+		SetTaskQueryString(task, fn(name, context));
+		task->replicationModel = REPLICATION_MODEL_INVALID;
+		task->dependentTaskList = NULL;
+		task->anchorShardId = shardId;
+		task->taskPlacementList = ActiveShardPlacementList(shardId);
+
+		taskList = lappend(taskList, task);
+	}
+
+	char *name = get_rel_name(relationId);
+	name = quote_qualified_identifier(namespaceName, name);
+
+	DDLJob *ddlJob = palloc0(sizeof(DDLJob));
+	ddlJob->targetRelationId = relationId;
+	ddlJob->concurrentIndexCmd = false;
+	ddlJob->commandString = fn(name, context);
+	ddlJob->taskList = taskList;
+
+	return ddlJob;
 }
 
 

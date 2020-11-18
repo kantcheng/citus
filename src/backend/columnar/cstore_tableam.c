@@ -49,6 +49,8 @@
 #include "columnar/cstore_customscan.h"
 #include "columnar/cstore_tableam.h"
 #include "columnar/cstore_version_compat.h"
+#include "distributed/commands/utility_hook.h"
+#include "distributed/metadata_cache.h"
 
 #define CSTORE_TABLEAM_NAME "cstore_tableam"
 
@@ -1265,6 +1267,38 @@ cstore_tableam_handler(PG_FUNCTION_ARGS)
 }
 
 
+typedef struct CstoreTableDDLOptions
+{
+	int blockRowCount;
+	int stripeRowCount;
+	CompressionType compression;
+} CstoreTableDDLOptions;
+
+
+/*
+ * CitusCreateAlterCstoreTableSet generates a portable
+ */
+static char *
+CitusCreateAlterCstoreTableSet(char *qualifiedRelationName, void *context)
+{
+	CstoreTableDDLOptions *options = (CstoreTableDDLOptions *) context;
+	StringInfoData buf = { 0 };
+	initStringInfo(&buf);
+
+	appendStringInfo(&buf,
+					 "SELECT alter_cstore_table_set(%s, "
+					 "block_row_count => %d, "
+					 "stripe_row_count => %d, "
+					 "compression => %s);",
+					 quote_literal_cstr(qualifiedRelationName),
+					 options->blockRowCount,
+					 options->stripeRowCount,
+					 quote_literal_cstr(CompressionTypeStr(options->compression)));
+
+	return buf.data;
+}
+
+
 /*
  * alter_cstore_table_set is a UDF exposed in postgres to change settings on a columnar
  * table. Calling this function on a non-columnar table gives an error.
@@ -1331,6 +1365,24 @@ alter_cstore_table_set(PG_FUNCTION_ARGS)
 								CompressionTypeStr(compression))));
 	}
 
+	if (IsCitusTable(relationId) && EnableDDLPropagation)
+	{
+		/* when a cstore table is distributed update all settings at once on the shards */
+		CstoreTableDDLOptions options = {
+			.stripeRowCount = stripeRowCount,
+			.blockRowCount = blockRowCount,
+			.compression = compression
+		};
+
+		DDLJob *ddljob = CreateCustomDDLTaskList(
+			relationId,
+			CitusCreateAlterCstoreTableSet,
+			&options
+			);
+
+		ExecuteDistributedDDLJob(ddljob);
+	}
+
 	UpdateCStoreDataFileMetadata(rel->rd_node.relNode, blockRowCount, stripeRowCount,
 								 compression);
 
@@ -1378,6 +1430,24 @@ alter_cstore_table_reset(PG_FUNCTION_ARGS)
 		compression = cstore_compression;
 		ereport(DEBUG1, (errmsg("resetting compression to %s",
 								CompressionTypeStr(compression))));
+	}
+
+	if (IsCitusTable(relationId) && EnableDDLPropagation)
+	{
+		/* when a cstore table is distributed update all settings at once on the shards */
+		CstoreTableDDLOptions options = {
+			.stripeRowCount = stripeRowCount,
+			.blockRowCount = blockRowCount,
+			.compression = compression
+		};
+
+		DDLJob *ddljob = CreateCustomDDLTaskList(
+			relationId,
+			CitusCreateAlterCstoreTableSet,
+			&options
+			);
+
+		ExecuteDistributedDDLJob(ddljob);
 	}
 
 	UpdateCStoreDataFileMetadata(rel->rd_node.relNode, blockRowCount, stripeRowCount,
