@@ -242,7 +242,7 @@ List* ExecuteFunctionOnEachTableIndex(Oid relationId, IndexProcesor indexProcess
 	while (HeapTupleIsValid(heapTuple))
 	{
 		Form_pg_index indexForm = (Form_pg_index) GETSTRUCT(heapTuple);
-		indexProcessor(indexForm, result);
+		indexProcessor(indexForm, &result);
 
 		heapTuple = systable_getnext(scanDescriptor);
 	}

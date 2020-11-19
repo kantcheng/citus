@@ -532,12 +532,7 @@ ModifyPartialQuerySupported(Query *queryTree, bool multiShardQuery,
 	{
 		return deferredError;
 	}
-
-	deferredError = DeferErrorIfUnsupportedModifyQueryWithLocalTable(queryTree);
-	if (deferredError != NULL)
-	{
-		return deferredError;
-	}
+	
 	Var *partitionColumn = NULL;
 
 	if (IsCitusTable(distributedTableId))
@@ -637,8 +632,11 @@ ModifyPartialQuerySupported(Query *queryTree, bool multiShardQuery,
 
 	distributedTableId = ModifyQueryResultRelationId(queryTree);
 	rangeTableId = 1;
-	partitionColumn = PartitionColumn(distributedTableId, rangeTableId);
 
+	if (IsCitusTable(distributedTableId))
+	{
+		partitionColumn = PartitionColumn(distributedTableId, rangeTableId);
+	}
 	commandType = queryTree->commandType;
 	if (commandType == CMD_INSERT || commandType == CMD_UPDATE ||
 		commandType == CMD_DELETE)

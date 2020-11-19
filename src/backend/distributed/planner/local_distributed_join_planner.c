@@ -6,8 +6,10 @@
 
 #include "catalog/pg_type.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_index.h"
 #include "distributed/citus_nodes.h"
 #include "distributed/citus_ruleutils.h"
+#include "distributed/commands.h"
 #include "distributed/commands/multi_copy.h"
 #include "distributed/distributed_planner.h"
 #include "distributed/errormessage.h"
@@ -53,7 +55,7 @@
 #include "utils/lsyscache.h"
 
 static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList);
-static bool HasUniqueFilter(RangeTblEntry* distRTE, List* distRTERestrictionList);
+static bool HasUniqueFilter(RangeTblEntry* distRTE, List* distRTERestrictionList, List* requiredAttrNumbersForDistRTE);
 static void AutoConvertLocalTableJoinToSubquery(RangeTblEntry* localRTE, RangeTblEntry* distRTE,
 		List* localRTERestrictionList, List* distRTERestrictionList,
 		List *requiredAttrNumbersForLocalRTE, List *requiredAttrNumbersForDistRTE);
@@ -64,6 +66,7 @@ static RangeTblEntry * FindNextRTECandidate(PlannerRestrictionContext *
 									   List *rangeTableList, List **restrictionList,
 									   bool localTable);
 static bool AllDataLocallyAccessible(List *rangeTableList);
+static void GetAllUniqueIndexes(Form_pg_index indexForm, List** uniqueIndexes);
 
 /*
  * ConvertLocalTableJoinsToSubqueries gets a query and the planner
@@ -95,33 +98,27 @@ ConvertLocalTableJoinsToSubqueries(Query *query,
 
 		PlannerRestrictionContext *plannerRestrictionContext =
 			context->plannerRestrictionContext;
-		RangeTblEntry *mostFilteredLocalRte =
+		RangeTblEntry *localRTECandidate =
 			FindNextRTECandidate(plannerRestrictionContext, rangeTableList,
 							&localTableRestrictList, localTable);
-		RangeTblEntry *mostFilteredDistributedRte =
+		RangeTblEntry *distributedRTECandidate =
 			FindNextRTECandidate(plannerRestrictionContext, rangeTableList,
 							&distributedTableRestrictList, !localTable);
 
 		List *requiredAttrNumbersForLocalRte =
-			RequiredAttrNumbersForRelation(mostFilteredLocalRte, context);
+			RequiredAttrNumbersForRelation(localRTECandidate, context);
 		List *requiredAttrNumbersForDistributedRte =
-			RequiredAttrNumbersForRelation(mostFilteredDistributedRte, context);
-
-
-		elog(DEBUG4, "Local relation with the most number of filters "
-					 "on it: \"%s\"", get_rel_name(mostFilteredLocalRte->relid));
-		elog(DEBUG4, "Distributed relation with the most number of filters "
-					 "on it: \"%s\"", get_rel_name(mostFilteredDistributedRte->relid));
+			RequiredAttrNumbersForRelation(distributedRTECandidate, context);
 
 		if (resultRelation) {
 
-			if (resultRelation->relid == mostFilteredLocalRte->relid) {
-				ReplaceRTERelationWithRteSubquery(mostFilteredDistributedRte,
+			if (resultRelation->relid == localRTECandidate->relid) {
+				ReplaceRTERelationWithRteSubquery(distributedRTECandidate,
 										distributedTableRestrictList,
 										requiredAttrNumbersForDistributedRte);
 				continue;						
-			}else if (resultRelation->relid == mostFilteredDistributedRte->relid) {
-				ReplaceRTERelationWithRteSubquery(mostFilteredLocalRte,
+			}else if (resultRelation->relid == distributedRTECandidate->relid) {
+				ReplaceRTERelationWithRteSubquery(localRTECandidate,
 										localTableRestrictList,
 										requiredAttrNumbersForLocalRte);
 				continue;						
@@ -130,19 +127,19 @@ ConvertLocalTableJoinsToSubqueries(Query *query,
 
 		if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_PREFER_LOCAL)
 		{
-			ReplaceRTERelationWithRteSubquery(mostFilteredLocalRte,
+			ReplaceRTERelationWithRteSubquery(localRTECandidate,
 											  localTableRestrictList,
 											  requiredAttrNumbersForLocalRte);
 		}
 		else if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_PREFER_DISTRIBUTED)
 		{
-			ReplaceRTERelationWithRteSubquery(mostFilteredDistributedRte,
+			ReplaceRTERelationWithRteSubquery(distributedRTECandidate,
 											  distributedTableRestrictList,
 											  requiredAttrNumbersForDistributedRte);
 		}
 		else if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_AUTO)
 		{
-			AutoConvertLocalTableJoinToSubquery(mostFilteredLocalRte, mostFilteredDistributedRte,
+			AutoConvertLocalTableJoinToSubquery(localRTECandidate, distributedRTECandidate,
 				localTableRestrictList, distributedTableRestrictList, 
 				requiredAttrNumbersForLocalRte, requiredAttrNumbersForDistributedRte);
 		}
@@ -182,7 +179,7 @@ static void AutoConvertLocalTableJoinToSubquery(RangeTblEntry* localRTE, RangeTb
 		List* localRTERestrictionList, List* distRTERestrictionList,
 		List *requiredAttrNumbersForLocalRTE, List *requiredAttrNumbersForDistRTE) {
 
-	bool hasUniqueFilter = HasUniqueFilter(distRTE, distRTERestrictionList);
+	bool hasUniqueFilter = HasUniqueFilter(distRTE, distRTERestrictionList, requiredAttrNumbersForDistRTE);
 	if (hasUniqueFilter) {
 		ReplaceRTERelationWithRteSubquery(distRTE,
 									distRTERestrictionList,
@@ -195,8 +192,25 @@ static void AutoConvertLocalTableJoinToSubquery(RangeTblEntry* localRTE, RangeTb
 	
 }
 
-static bool HasUniqueFilter(RangeTblEntry* distRTE, List* distRTERestrictionList) {
-	return true;
+// TODO:: This function should only consider equality,
+// currently it will return true for dist.a > 5. We should check this from join->quals.
+static bool HasUniqueFilter(RangeTblEntry* distRTE, List* distRTERestrictionList, List* requiredAttrNumbersForDistRTE) {
+	List* uniqueIndexes = ExecuteFunctionOnEachTableIndex(distRTE->relid, GetAllUniqueIndexes);
+    int columnNumber = 0;
+    foreach_int(columnNumber, uniqueIndexes) {
+        if (list_member_int(requiredAttrNumbersForDistRTE, columnNumber)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void GetAllUniqueIndexes(Form_pg_index indexForm, List** uniqueIndexes) {
+    if (indexForm->indisunique || indexForm->indisprimary) {
+        for(int i = 0; i < indexForm->indkey.dim1; i++) {
+            *uniqueIndexes = list_append_unique_int(*uniqueIndexes, indexForm->indkey.values[i]);
+        }
+    }
 }
 
 

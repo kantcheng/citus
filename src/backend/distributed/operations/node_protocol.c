@@ -75,7 +75,7 @@ int NextPlacementId = 0;
 
 static List * GetTableReplicaIdentityCommand(Oid relationId);
 static Datum WorkerNodeGetDatum(WorkerNode *workerNode, TupleDesc tupleDescriptor);
-static void TableIndexAndConstraintAdder(Form_pg_index indexForm, List* indexDDLEventList);
+static void TableIndexAndConstraintAdder(Form_pg_index indexForm, List** indexDDLEventList);
 
 /* exports for SQL callable functions */
 PG_FUNCTION_INFO_V1(master_get_table_metadata);
@@ -666,7 +666,7 @@ GetTableIndexAndConstraintCommands(Oid relationId)
 	return ExecuteFunctionOnEachTableIndex(relationId, TableIndexAndConstraintAdder);
 }
 
-static void TableIndexAndConstraintAdder(Form_pg_index indexForm, List* indexDDLEventList) {
+static void TableIndexAndConstraintAdder(Form_pg_index indexForm, List** indexDDLEventList) {
 	Oid indexId = indexForm->indexrelid;
 	char *statementDef = NULL;
 
@@ -686,7 +686,7 @@ static void TableIndexAndConstraintAdder(Form_pg_index indexForm, List* indexDDL
 	}
 
 	/* append found constraint or index definition to the list */
-	indexDDLEventList = lappend(indexDDLEventList, statementDef);
+	*indexDDLEventList = lappend(*indexDDLEventList, statementDef);
 
 	/* if table is clustered on this index, append definition to the list */
 	if (indexForm->indisclustered)
@@ -694,7 +694,7 @@ static void TableIndexAndConstraintAdder(Form_pg_index indexForm, List* indexDDL
 		char *clusteredDef = pg_get_indexclusterdef_string(indexId);
 		Assert(clusteredDef != NULL);
 
-		indexDDLEventList = lappend(indexDDLEventList, clusteredDef);
+		*indexDDLEventList = lappend(*indexDDLEventList, clusteredDef);
 	}
 }
 
