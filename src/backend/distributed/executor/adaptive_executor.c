@@ -2761,7 +2761,6 @@ CheckConnectionTimeout(WorkerPool *workerPool)
 				 * TODO: can we do something better than this?
 				 */
 				workerPool->failed = true;
-
 				workerPool->checkForPoolTimeout = false;
 
 				return;
@@ -3133,10 +3132,21 @@ ConnectionStateMachine(WorkerSession *session)
 					/* a task has failed due to this connection failure */
 					ReportConnectionError(connection, ERROR);
 				}
+				else if (workerPool->activeConnectionCount == 0)
+				{
+					/*
+					 * Can continue with the remaining nodes, still warn
+					 * the user.
+					 */
+					ReportConnectionError(connection, WARNING);
+				}
 				else
 				{
-					/* can continue with the remaining nodes */
-					ReportConnectionError(connection, WARNING);
+					/*
+					 * We already have active connection to node, so maybe
+					 * surpress the warning?
+					 */
+					ReportConnectionError(connection, DEBUG1);
 				}
 
 				/* remove the connection */
