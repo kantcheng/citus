@@ -75,7 +75,7 @@ int NextPlacementId = 0;
 
 static List * GetTableReplicaIdentityCommand(Oid relationId);
 static Datum WorkerNodeGetDatum(WorkerNode *workerNode, TupleDesc tupleDescriptor);
-
+static void TableIndexAndConstraintAdder(Form_pg_index indexForm, List* indexDDLEventList);
 
 /* exports for SQL callable functions */
 PG_FUNCTION_INFO_V1(master_get_table_metadata);
@@ -663,69 +663,40 @@ GetPreLoadTableCreationCommands(Oid relationId, bool includeSequenceDefaults)
 List *
 GetTableIndexAndConstraintCommands(Oid relationId)
 {
-	List *indexDDLEventList = NIL;
-	ScanKeyData scanKey[1];
-	int scanKeyCount = 1;
-
-	PushOverrideEmptySearchPath(CurrentMemoryContext);
-
-	/* open system catalog and scan all indexes that belong to this table */
-	Relation pgIndex = table_open(IndexRelationId, AccessShareLock);
-
-	ScanKeyInit(&scanKey[0], Anum_pg_index_indrelid,
-				BTEqualStrategyNumber, F_OIDEQ, relationId);
-
-	SysScanDesc scanDescriptor = systable_beginscan(pgIndex,
-													IndexIndrelidIndexId, true, /* indexOK */
-													NULL, scanKeyCount, scanKey);
-
-	HeapTuple heapTuple = systable_getnext(scanDescriptor);
-	while (HeapTupleIsValid(heapTuple))
-	{
-		Form_pg_index indexForm = (Form_pg_index) GETSTRUCT(heapTuple);
-		Oid indexId = indexForm->indexrelid;
-		char *statementDef = NULL;
-
-		bool indexImpliedByConstraint = IndexImpliedByAConstraint(indexForm);
-
-		/* get the corresponding constraint or index statement */
-		if (indexImpliedByConstraint)
-		{
-			Oid constraintId = get_index_constraint(indexId);
-			Assert(constraintId != InvalidOid);
-
-			statementDef = pg_get_constraintdef_command(constraintId);
-		}
-		else
-		{
-			statementDef = pg_get_indexdef_string(indexId);
-		}
-
-		/* append found constraint or index definition to the list */
-		indexDDLEventList = lappend(indexDDLEventList, statementDef);
-
-		/* if table is clustered on this index, append definition to the list */
-		if (indexForm->indisclustered)
-		{
-			char *clusteredDef = pg_get_indexclusterdef_string(indexId);
-			Assert(clusteredDef != NULL);
-
-			indexDDLEventList = lappend(indexDDLEventList, clusteredDef);
-		}
-
-		heapTuple = systable_getnext(scanDescriptor);
-	}
-
-	/* clean up scan and close system catalog */
-	systable_endscan(scanDescriptor);
-	table_close(pgIndex, AccessShareLock);
-
-	/* revert back to original search_path */
-	PopOverrideSearchPath();
-
-	return indexDDLEventList;
+	return ExecuteFunctionOnEachTableIndex(relationId, TableIndexAndConstraintAdder);
 }
 
+static void TableIndexAndConstraintAdder(Form_pg_index indexForm, List* indexDDLEventList) {
+	Oid indexId = indexForm->indexrelid;
+	char *statementDef = NULL;
+
+	bool indexImpliedByConstraint = IndexImpliedByAConstraint(indexForm);
+
+	/* get the corresponding constraint or index statement */
+	if (indexImpliedByConstraint)
+	{
+		Oid constraintId = get_index_constraint(indexId);
+		Assert(constraintId != InvalidOid);
+
+		statementDef = pg_get_constraintdef_command(constraintId);
+	}
+	else
+	{
+		statementDef = pg_get_indexdef_string(indexId);
+	}
+
+	/* append found constraint or index definition to the list */
+	indexDDLEventList = lappend(indexDDLEventList, statementDef);
+
+	/* if table is clustered on this index, append definition to the list */
+	if (indexForm->indisclustered)
+	{
+		char *clusteredDef = pg_get_indexclusterdef_string(indexId);
+		Assert(clusteredDef != NULL);
+
+		indexDDLEventList = lappend(indexDDLEventList, clusteredDef);
+	}
+}
 
 /*
  * IndexImpliedByAConstraint is a helper function to be used while scanning

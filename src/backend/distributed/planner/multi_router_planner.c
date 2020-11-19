@@ -635,11 +635,11 @@ ModifyPartialQuerySupported(Query *queryTree, bool multiShardQuery,
 		}
 	}
 
-	Oid distributedTableId = ModifyQueryResultRelationId(queryTree);
-	uint32 rangeTableId = 1;
-	Var *partitionColumn = PartitionColumn(distributedTableId, rangeTableId);
+	distributedTableId = ModifyQueryResultRelationId(queryTree);
+	rangeTableId = 1;
+	partitionColumn = PartitionColumn(distributedTableId, rangeTableId);
 
-	CmdType commandType = queryTree->commandType;
+	commandType = queryTree->commandType;
 	if (commandType == CMD_INSERT || commandType == CMD_UPDATE ||
 		commandType == CMD_DELETE)
 	{

@@ -59,6 +59,7 @@
 #include "distributed/commands/multi_copy.h"
 #include "distributed/distributed_planner.h"
 #include "distributed/errormessage.h"
+#include "distributed/local_distributed_join_planner.h"
 #include "distributed/listutils.h"
 #include "distributed/log_utils.h"
 #include "distributed/metadata_cache.h"
@@ -108,21 +109,6 @@ int LocalTableJoinPolicy = LOCAL_JOIN_POLICY_AUTO;
 
 /* track depth of current recursive planner query */
 static int recursivePlanningDepth = 0;
-
-/*
- * RecursivePlanningContext is used to recursively plan subqueries
- * and CTEs, pull results to the coordinator, and push it back into
- * the workers.
- */
-typedef struct RecursivePlanningContext
-{
-	int level;
-	uint64 planId;
-	bool allDistributionKeysInQueryAreEqual; /* used for some optimizations */
-	List *subPlanList;
-	PlannerRestrictionContext *plannerRestrictionContext;
-} RecursivePlanningContext;
-
 
 /*
  * CteReferenceWalkerContext is used to collect CTE references in
@@ -191,18 +177,6 @@ static bool ContainsReferencesToOuterQuery(Query *query);
 static bool ContainsReferencesToOuterQueryWalker(Node *node,
 												 VarLevelsUpWalkerContext *context);
 static bool NodeContainsSubqueryReferencingOuterQuery(Node *node);
-static void ConvertLocalTableJoinsToSubqueries(Query *query,
-											   RecursivePlanningContext *planningContext);
-static List * RequiredAttrNumbersForRelation(RangeTblEntry *relationRte,
-											 RecursivePlanningContext *planningContext);
-static RangeTblEntry * FindNextRTECandidate(PlannerRestrictionContext *
-									   plannerRestrictionContext,
-									   List *rangeTableList, List **restrictionList,
-									   bool localTable);
-static void ReplaceRTERelationWithRteSubquery(RangeTblEntry *rangeTableEntry,
-											  List *restrictionList,
-											  List *requiredAttrNumbers);
-static bool AllDataLocallyAccessible(List *rangeTableList);
 static void WrapFunctionsInSubqueries(Query *query);
 static void TransformFunctionRTE(RangeTblEntry *rangeTblEntry);
 static bool ShouldTransformRTE(RangeTblEntry *rangeTableEntry);
@@ -210,12 +184,6 @@ static Query * BuildReadIntermediateResultsQuery(List *targetEntryList,
 												 List *columnAliasList,
 												 Const *resultIdConst, Oid functionOid,
 												 bool useBinaryCopyFormat);
-
-static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList);
-static bool HasUniqueFilter(RangeTblEntry* distRTE, List* distRTERestrictionList);
-static void AutoConvertLocalTableJoinToSubquery(RangeTblEntry* localRTE, RangeTblEntry* distRTE,
-		List* localRTERestrictionList, List* distRTERestrictionList,
-		List *requiredAttrNumbersForLocalRTE, List *requiredAttrNumbersForDistRTE);
 /*
  * GenerateSubplansForSubqueriesAndCTEs is a wrapper around RecursivelyPlanSubqueriesAndCTEs.
  * The function returns the subplans if necessary. For the details of when/how subplans are
@@ -1376,245 +1344,11 @@ NodeContainsSubqueryReferencingOuterQuery(Node *node)
 	return false;
 }
 
-
-/*
- * ConvertLocalTableJoinsToSubqueries gets a query and the planner
- * restrictions. As long as there is a join between a local table
- * and distributed table, the function wraps one table in a
- * subquery (by also pushing the filters on the table down
- * to the subquery).
- *
- * Once this function returns, there are no direct joins between
- * local and distributed tables.
- */
-static void
-ConvertLocalTableJoinsToSubqueries(Query *query,
-								   RecursivePlanningContext *context)
-{
-	List *rangeTableList = query->rtable;
-	if(!ShouldConvertLocalTableJoinsToSubqueries(rangeTableList)) {
-		return;
-	}
-
-	RangeTblEntry *resultRelation = ExtractResultRelationRTE(query);
-
-	while (ContainsLocalTableDistributedTableJoin(rangeTableList))
-	{
-		List *localTableRestrictList = NIL;
-		List *distributedTableRestrictList = NIL;
-
-		bool localTable = true;
-
-		PlannerRestrictionContext *plannerRestrictionContext =
-			context->plannerRestrictionContext;
-		RangeTblEntry *mostFilteredLocalRte =
-			FindNextRTECandidate(plannerRestrictionContext, rangeTableList,
-							&localTableRestrictList, localTable);
-		RangeTblEntry *mostFilteredDistributedRte =
-			FindNextRTECandidate(plannerRestrictionContext, rangeTableList,
-							&distributedTableRestrictList, !localTable);
-
-		List *requiredAttrNumbersForLocalRte =
-			RequiredAttrNumbersForRelation(mostFilteredLocalRte, context);
-		List *requiredAttrNumbersForDistributedRte =
-			RequiredAttrNumbersForRelation(mostFilteredDistributedRte, context);
-
-
-		elog(DEBUG4, "Local relation with the most number of filters "
-					 "on it: \"%s\"", get_rel_name(mostFilteredLocalRte->relid));
-		elog(DEBUG4, "Distributed relation with the most number of filters "
-					 "on it: \"%s\"", get_rel_name(mostFilteredDistributedRte->relid));
-
-		if (resultRelation) {
-
-			if (resultRelation->relid == mostFilteredLocalRte->relid) {
-				ReplaceRTERelationWithRteSubquery(mostFilteredDistributedRte,
-										distributedTableRestrictList,
-										requiredAttrNumbersForDistributedRte);
-				continue;						
-			}else if (resultRelation->relid == mostFilteredDistributedRte->relid) {
-				ReplaceRTERelationWithRteSubquery(mostFilteredLocalRte,
-										localTableRestrictList,
-										requiredAttrNumbersForLocalRte);
-				continue;						
-			}
-		}
-
-		if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_PREFER_LOCAL)
-		{
-			ReplaceRTERelationWithRteSubquery(mostFilteredLocalRte,
-											  localTableRestrictList,
-											  requiredAttrNumbersForLocalRte);
-		}
-		else if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_PREFER_DISTRIBUTED)
-		{
-			ReplaceRTERelationWithRteSubquery(mostFilteredDistributedRte,
-											  distributedTableRestrictList,
-											  requiredAttrNumbersForDistributedRte);
-		}
-		else if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_AUTO)
-		{
-			AutoConvertLocalTableJoinToSubquery(mostFilteredLocalRte, mostFilteredDistributedRte,
-				localTableRestrictList, distributedTableRestrictList, 
-				requiredAttrNumbersForLocalRte, requiredAttrNumbersForDistributedRte);
-		}
-		else
-		{
-			elog(ERROR, "unexpected local table join policy: %d", LocalTableJoinPolicy);
-		}
-	}
-}
-
-/*
- * ShouldConvertLocalTableJoinsToSubqueries returns true if we should
- * convert local-dist table joins to subqueries.
- */
-static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList) {
-	if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_NEVER)
-	{
-		/* user doesn't want Citus to enable local table joins */
-		return false;
-	}
-
-	if (!ContainsLocalTableDistributedTableJoin(rangeTableList))
-	{
-		/* nothing to do as there are no relevant joins */
-		return false;
-	}
-
-	if (AllDataLocallyAccessible(rangeTableList))
-	{
-		/* recursively planning is overkill, router planner can already handle this */
-		return false;
-	}
-	return true;
-}
-
-static void AutoConvertLocalTableJoinToSubquery(RangeTblEntry* localRTE, RangeTblEntry* distRTE,
-		List* localRTERestrictionList, List* distRTERestrictionList,
-		List *requiredAttrNumbersForLocalRTE, List *requiredAttrNumbersForDistRTE) {
-
-	bool hasUniqueFilter = HasUniqueFilter(distRTE, distRTERestrictionList);
-	if (hasUniqueFilter) {
-		ReplaceRTERelationWithRteSubquery(distRTE,
-									distRTERestrictionList,
-									requiredAttrNumbersForDistRTE);
-	}else {
-		ReplaceRTERelationWithRteSubquery(localRTE,
-											localRTERestrictionList,
-											requiredAttrNumbersForLocalRTE);
-	}
-	
-}
-
-static bool HasUniqueFilter(RangeTblEntry* distRTE, List* distRTERestrictionList) {
-	return true;
-}
-
-
-/*
- * RequiredAttrNumbersForRelation returns the required attribute numbers for
- * the input RTE relation in order for the planning to succeed.
- *
- * The function could be optimized by not adding the columns that only appear
- * WHERE clause as a filter (e.g., not a join clause).
- */
-static List *
-RequiredAttrNumbersForRelation(RangeTblEntry *relationRte,
-							   RecursivePlanningContext *planningContext)
-{
-	PlannerRestrictionContext *plannerRestrictionContext =
-		planningContext->plannerRestrictionContext;
-
-	/* TODO: Get rid of this hack, find relation restriction information directly */
-	PlannerRestrictionContext *filteredPlannerRestrictionContext =
-		FilterPlannerRestrictionForQuery(plannerRestrictionContext,
-										 WrapRteRelationIntoSubquery(relationRte, NIL));
-
-	RelationRestrictionContext *relationRestrictionContext =
-		filteredPlannerRestrictionContext->relationRestrictionContext;
-	List *filteredRelationRestrictionList =
-		relationRestrictionContext->relationRestrictionList;
-	RelationRestriction *relationRestriction =
-		(RelationRestriction *) linitial(filteredRelationRestrictionList);
-
-	PlannerInfo *plannerInfo = relationRestriction->plannerInfo;
-	Query *queryToProcess = plannerInfo->parse;
-	int rteIndex = relationRestriction->index;
-
-	List *allVarsInQuery = pull_vars_of_level((Node *) queryToProcess, 0);
-	ListCell *varCell = NULL;
-
-	List *requiredAttrNumbers = NIL;
-
-	foreach(varCell, allVarsInQuery)
-	{
-		Var *var = (Var *) lfirst(varCell);
-
-		if (var->varno == rteIndex)
-		{
-			requiredAttrNumbers = list_append_unique_int(requiredAttrNumbers,
-														 var->varattno);
-		}
-	}
-
-	return requiredAttrNumbers;
-}
-
-
-/*
- * FindNextRTECandidate returns a range table entry which has the most filters
- * on it along with the restrictions (e.g., fills **restrictionList).
- *
- * The function also gets a boolean localTable parameter, so the caller
- * can choose to run the function for only local tables or distributed tables.
- */
-static RangeTblEntry *
-FindNextRTECandidate(PlannerRestrictionContext *plannerRestrictionContext,
-				List *rangeTableList, List **restrictionList,
-				bool localTable)
-{
-	ListCell *rangeTableCell = NULL;
-
-	foreach(rangeTableCell, rangeTableList)
-	{
-		RangeTblEntry *rangeTableEntry = (RangeTblEntry *) lfirst(rangeTableCell);
-
-		/* we're only interested in tables */
-		if (!(rangeTableEntry->rtekind == RTE_RELATION &&
-			  rangeTableEntry->relkind == RELKIND_RELATION))
-		{
-			continue;
-		}
-
-		if (localTable && IsCitusTable(rangeTableEntry->relid))
-		{
-			continue;
-		}
-
-		if (!localTable && !IsCitusTable(rangeTableEntry->relid))
-		{
-			continue;
-		}
-
-		List *currentRestrictionList =
-			GetRestrictInfoListForRelation(rangeTableEntry,
-										   plannerRestrictionContext, 1);
-
-		*restrictionList = currentRestrictionList;
-		return rangeTableEntry;
-	}
-	// TODO:: Put Illegal state error code
-	ereport(ERROR, (errmsg("unexpected state: could not find any RTE to convert to subquery in range table list")));
-	return NULL;
-}
-
-
 /*
  * ReplaceRTERelationWithRteSubquery replaces the input rte relation target entry
  * with a subquery. The function also pushes down the filters to the subquery.
  */
-static void
+void
 ReplaceRTERelationWithRteSubquery(RangeTblEntry *rangeTableEntry, List *restrictionList,
 								  List *requiredAttrNumbers)
 {
@@ -1647,56 +1381,6 @@ ReplaceRTERelationWithRteSubquery(RangeTblEntry *rangeTableEntry, List *restrict
 								get_rel_name(rangeTableEntry->relid),
 								ApplyLogRedaction(subqueryString->data))));
 	}
-}
-
-
-/*
- * AllDataLocallyAccessible return true if all data for the relations in the
- * rangeTableList is locally accessible.
- */
-static bool
-AllDataLocallyAccessible(List *rangeTableList)
-{
-	ListCell *rangeTableCell = NULL;
-	foreach(rangeTableCell, rangeTableList)
-	{
-		RangeTblEntry *rangeTableEntry = (RangeTblEntry *) lfirst(rangeTableCell);
-
-		/* we're only interested in tables */
-		if (!(rangeTableEntry->rtekind == RTE_RELATION &&
-			  rangeTableEntry->relkind == RELKIND_RELATION))
-		{
-			continue;
-		}
-
-
-		Oid relationId = rangeTableEntry->relid;
-
-		if (!IsCitusTable(relationId))
-		{
-			/* local tables are locally accessible */
-			continue;
-		}
-
-		List *shardIntervalList = LoadShardIntervalList(relationId);
-		if (list_length(shardIntervalList) > 1)
-		{
-			/* we currently only consider single placement tables */
-			return false;
-		}
-
-		ShardInterval *shardInterval = linitial(shardIntervalList);
-		uint64 shardId = shardInterval->shardId;
-		ShardPlacement *localShardPlacement =
-			ShardPlacementOnGroup(shardId, GetLocalGroupId());
-		if (localShardPlacement == NULL)
-		{
-			/* the table doesn't have a placement on this node */
-			return false;
-		}
-	}
-
-	return true;
 }
 
 
