@@ -2761,6 +2761,10 @@ CheckConnectionTimeout(WorkerPool *workerPool)
 				 * TODO: can we do something better than this?
 				 */
 				workerPool->failed = true;
+
+				workerPool->checkForPoolTimeout = false;
+
+				return;
 			}
 
 			int logLevel = WARNING;
