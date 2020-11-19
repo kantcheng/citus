@@ -2749,6 +2749,20 @@ CheckConnectionTimeout(WorkerPool *workerPool)
 	{
 		if (activeConnectionCount < requiredActiveConnectionCount)
 		{
+			if (CouldAssignTasksToLocalExecution(workerPool))
+			{
+				/* move remote tasks to local execution as we failed to connect */
+				ConvertRemoteTasksToLocalTasks(workerPool);
+
+				ExcludeAllSessionsFromExecution(workerPool);
+
+				/*
+				 * We do not want more connections in this pool.
+				 * TODO: can we do something better than this?
+				 */
+				workerPool->failed = true;
+			}
+
 			int logLevel = WARNING;
 
 			/*
