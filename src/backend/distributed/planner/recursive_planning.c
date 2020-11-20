@@ -1400,19 +1400,20 @@ ContainsLocalTableDistributedTableJoin(List *rangeTableList)
 		RangeTblEntry *rangeTableEntry = (RangeTblEntry *) lfirst(rangeTableCell);
 
 		/* we're only interested in tables */
-		if (rangeTableEntry->rtekind != RTE_RELATION ||
-			  rangeTableEntry->relkind != RELKIND_RELATION)
+		/* TODO:: What about partitioned tables? */
+		if (!(rangeTableEntry->rtekind == RTE_RELATION &&
+			  rangeTableEntry->relkind == RELKIND_RELATION))
 		{
 			continue;
 		}
 
-		/* TODO: do NOT forget Citus local tables */
-		if (IsCitusTable(rangeTableEntry->relid))
+		if (IsCitusTableType(rangeTableEntry->relid, DISTRIBUTED_TABLE) || IsCitusTableType(rangeTableEntry->relid, REFERENCE_TABLE))
 		{
 			containsDistributedTable = true;
 		}
 		else
 		{
+			/* we consider citus local tables as local table */
 			containsLocalTable = true;
 		}
 	}

@@ -1,7 +1,6 @@
 CREATE SCHEMA local_table_join;
 SET search_path TO local_table_join;
 
-
 CREATE TABLE postgres_table (key int, value text, value_2 jsonb);
 CREATE TABLE reference_table (key int, value text, value_2 jsonb);
 SELECT create_reference_table('reference_table');
@@ -247,6 +246,53 @@ WHERE
 	postgres_table.key = d1.key AND d1.key = d2.key;
 
 
-\set VERBOSITY terse
+
+---------------------------------------------------------
+
+SET client_min_messages to ERROR;
+SELECT master_add_node('localhost', :master_port, groupId => 0);
+
+
+CREATE TABLE citus_local(key int, value text);
+SELECT create_citus_local_table('citus_local');
+SET client_min_messages TO DEBUG1;
+
+-- same for citus local table - distributed table joins
+-- a unique index on key so dist table should be recursively planned
+SELECT count(*) FROM citus_local JOIN distributed_table_windex USING(key);
+SELECT count(*) FROM citus_local JOIN distributed_table_windex USING(value);
+SELECT count(*) FROM citus_local JOIN distributed_table_windex ON citus_local.key = distributed_table_windex.key;
+SELECT count(*) FROM citus_local JOIN distributed_table_windex ON distributed_table_windex.key = 10;
+
+-- no unique index, citus local table should be recursively planned
+SELECT count(*) FROM citus_local JOIN distributed_table USING(key);
+SELECT count(*) FROM citus_local JOIN distributed_table USING(value);
+SELECT count(*) FROM citus_local JOIN distributed_table ON citus_local.key = distributed_table.key;
+SELECT count(*) FROM citus_local JOIN distributed_table ON distributed_table.key = 10;
+
+SELECT count(*) FROM citus_local JOIN distributed_table USING(key) JOIN postgres_table USING (key) JOIN reference_table USING(key);
+
+-- update
+UPDATE
+	distributed_table_windex
+SET
+	value = 'test'
+FROM
+	citus_local
+WHERE
+	distributed_table_windex.key = citus_local.key;	
+
+UPDATE
+	citus_local
+SET
+	value = 'test'
+FROM
+	distributed_table_windex
+WHERE
+	distributed_table_windex.key = citus_local.key;		
+
+DROP TABLE citus_local;
 RESET client_min_messages;
+SELECT master_remove_node('localhost', :master_port);
+\set VERBOSITY terse
 DROP SCHEMA local_table_join CASCADE;

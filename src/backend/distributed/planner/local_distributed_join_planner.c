@@ -94,16 +94,16 @@ ConvertLocalTableJoinsToSubqueries(Query *query,
 		List *localTableRestrictList = NIL;
 		List *distributedTableRestrictList = NIL;
 
-		bool localTable = true;
+		bool localOrCitusLocalTable = true;
 
 		PlannerRestrictionContext *plannerRestrictionContext =
 			context->plannerRestrictionContext;
 		RangeTblEntry *localRTECandidate =
 			FindNextRTECandidate(plannerRestrictionContext, rangeTableList,
-							&localTableRestrictList, localTable);
+							&localTableRestrictList, localOrCitusLocalTable);
 		RangeTblEntry *distributedRTECandidate =
 			FindNextRTECandidate(plannerRestrictionContext, rangeTableList,
-							&distributedTableRestrictList, !localTable);
+							&distributedTableRestrictList, !localOrCitusLocalTable);
 
 		List *requiredAttrNumbersForLocalRte =
 			RequiredAttrNumbersForRelation(localRTECandidate, context);
@@ -274,7 +274,7 @@ RequiredAttrNumbersForRelation(RangeTblEntry *relationRte,
 static RangeTblEntry *
 FindNextRTECandidate(PlannerRestrictionContext *plannerRestrictionContext,
 				List *rangeTableList, List **restrictionList,
-				bool localTable)
+				bool postgresOrCitusLocalTable)
 {
 	ListCell *rangeTableCell = NULL;
 
@@ -289,12 +289,13 @@ FindNextRTECandidate(PlannerRestrictionContext *plannerRestrictionContext,
 			continue;
 		}
 
-		if (localTable && IsCitusTable(rangeTableEntry->relid))
+		bool referenceOrDistributedTable = IsCitusTableType(rangeTableEntry->relid, REFERENCE_TABLE) || IsCitusTableType(rangeTableEntry->relid, DISTRIBUTED_TABLE);
+		if (postgresOrCitusLocalTable && referenceOrDistributedTable)
 		{
 			continue;
 		}
 
-		if (!localTable && !IsCitusTable(rangeTableEntry->relid))
+		if (!postgresOrCitusLocalTable && !referenceOrDistributedTable)
 		{
 			continue;
 		}
