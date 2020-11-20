@@ -396,8 +396,20 @@ worker_apply_shard_ddl_command(PG_FUNCTION_ARGS)
 
 	/* extend names in ddl command and apply extended command */
 	RelayEventExtendNames(ddlCommandNode, schemaName, shardId);
-	CitusProcessUtility(ddlCommandNode, ddlCommand, PROCESS_UTILITY_TOPLEVEL, NULL,
-						None_Receiver, NULL);
+
+	/*
+	 * Citus might have some ddl command like UDF's that get called via SELECT, others
+	 * will be dispatched to the utility hook
+	 */
+	if (IsA(ddlCommandNode, SelectStmt))
+	{
+		ExecuteCitusDDLFunction(castNode(SelectStmt, ddlCommandNode));
+	}
+	else
+	{
+		CitusProcessUtility(ddlCommandNode, ddlCommand, PROCESS_UTILITY_TOPLEVEL, NULL,
+							None_Receiver, NULL);
+	}
 
 	PG_RETURN_VOID();
 }

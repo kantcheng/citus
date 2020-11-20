@@ -64,6 +64,7 @@
 #include "utils/ruleutils.h"
 #include "utils/varlena.h"
 
+#include "columnar/cstore_tableam.h"
 
 /* Shard related configuration */
 int ShardCount = 32;
@@ -639,6 +640,19 @@ GetPreLoadTableCreationCommands(Oid relationId, bool includeSequenceDefaults)
 	{
 		tableDDLEventList = lappend(tableDDLEventList, tableColumnOptionsDef);
 	}
+
+#if PG_VERSION_NUM >= 120000
+
+	/* add columnar options for cstore tables */
+	if (IsCStoreTableAmTable(relationId))
+	{
+		char *cstoreOptionsDDL = CStoreGetTableOptionsDDL(relationId);
+		if (cstoreOptionsDDL != NULL)
+		{
+			tableDDLEventList = lappend(tableDDLEventList, cstoreOptionsDDL);
+		}
+	}
+#endif
 
 	char *tableOwnerDef = TableOwnerResetCommand(relationId);
 	if (tableOwnerDef != NULL)

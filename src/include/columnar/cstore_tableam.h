@@ -16,4 +16,9 @@ extern TableScanDesc cstore_beginscan_extended(Relation relation, Snapshot snaps
 											   ParallelTableScanDesc parallel_scan,
 											   uint32 flags, Bitmapset *attr_needed,
 											   List *scanQual);
+
+extern bool IsCStoreTableAmTable(Oid relationId);
+extern char * CStoreGetTableOptionsDDL(Oid relationId);
+
+extern Datum alter_cstore_table_set(PG_FUNCTION_ARGS);
 #endif

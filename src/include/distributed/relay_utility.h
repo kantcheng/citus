@@ -18,6 +18,7 @@
 #include "fmgr.h"
 #include "lib/stringinfo.h"
 #include "nodes/nodes.h"
+#include "nodes/parsenodes.h"
 
 
 /* Shard name and identifier related defines */
@@ -45,6 +46,8 @@ extern void RelayEventExtendNamesForInterShardCommands(Node *parseTree,
 													   uint64 rightShardId,
 													   char *rightShardSchemaName);
 extern void AppendShardIdToName(char **name, uint64 shardId);
+
+extern void ExecuteCitusDDLFunction(SelectStmt *stmt);
 
 extern void SetSchemaNameIfNotExist(char **schemaName, const char *newSchemaName);
 

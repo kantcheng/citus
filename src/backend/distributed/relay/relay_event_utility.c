@@ -29,6 +29,7 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_constraint.h"
+#include "columnar/cstore_tableam.h"
 #include "distributed/citus_safe_lib.h"
 #include "distributed/commands.h"
 #include "distributed/listutils.h"
@@ -50,10 +51,15 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/palloc.h"
+#include "utils/regproc.h"
 #include "utils/relcache.h"
 
 /* Local functions forward declarations */
 static bool UpdateWholeRowColumnReferencesWalker(Node *node, uint64 *shardId);
+static bool IsCstoreAlterTableOptionsFunctionCall(SelectStmt *stmt);
+static void RewriteCStoreAlterTableOptionsFunctionCallForShard(SelectStmt *stmt,
+															   char *schemaName,
+															   uint64 shardId);
 
 /* exports for SQL callable functions */
 PG_FUNCTION_INFO_V1(shard_name);
@@ -534,12 +540,277 @@ RelayEventExtendNames(Node *parseTree, char *schemaName, uint64 shardId)
 			break;
 		}
 
+		case T_SelectStmt:
+		{
+			/*
+			 * Since postgres doesn't allow custom options on a table access method table
+			 * we use a UDF to apply the options to the table. This function effectively
+			 * behaves like a ddl command.
+			 *
+			 * Since the coordinator outsourced the application of the shard id in the ddl
+			 * commands to the worker we use the same infrastructure to route this UDF
+			 * through and apply the shard name.
+			 *
+			 * Execution of the UDF will be deferred to a later point.
+			 */
+			if (IsCstoreAlterTableOptionsFunctionCall(castNode(SelectStmt, parseTree)))
+			{
+				SelectStmt *stmt = castNode(SelectStmt, parseTree);
+				RewriteCStoreAlterTableOptionsFunctionCallForShard(stmt, schemaName,
+																   shardId);
+			}
+			else
+			{
+				ereport(WARNING, (errmsg("unsafe statement type in name extension"),
+								  errdetail("Statement type: %u", (uint32) nodeType)));
+			}
+			break;
+		}
+
 		default:
 		{
 			ereport(WARNING, (errmsg("unsafe statement type in name extension"),
 							  errdetail("Statement type: %u", (uint32) nodeType)));
 			break;
 		}
+	}
+}
+
+
+static FuncCall *
+ExtractCStoreAtlterTableOptionsFunctionCall(SelectStmt *stmt)
+{
+	if (stmt == NULL)
+	{
+		return NULL;
+	}
+
+	/* cstore options have only 1 function in the target list */
+	if (list_length(stmt->targetList) != 1)
+	{
+		return NULL;
+	}
+
+	Node *targetNode = (Node *) linitial(stmt->targetList);
+	if (targetNode == NULL || !IsA(targetNode, ResTarget))
+	{
+		return NULL;
+	}
+
+	ResTarget *target = castNode(ResTarget, linitial(stmt->targetList));
+	if (target->val == NULL || !IsA(target->val, FuncCall))
+	{
+		return NULL;
+	}
+
+	FuncCall *funcCall = castNode(FuncCall, target->val);
+	if (list_length(funcCall->funcname) != 1)
+	{
+		return NULL;
+	}
+
+	Node *funcNameNode = linitial(funcCall->funcname);
+	if (funcNameNode == NULL || !IsA(funcNameNode, String))
+	{
+		return NULL;
+	}
+
+	char *funcName = strVal(funcNameNode);
+	if (strncmp(funcName, "alter_cstore_table_set", NAMEDATALEN) != 0)
+	{
+		return NULL;
+	}
+
+
+	/* TODO, verify it has the table_name argument set */
+
+	return funcCall;
+}
+
+
+static bool
+IsCstoreAlterTableOptionsFunctionCall(SelectStmt *stmt)
+{
+	FuncCall *funcCall = ExtractCStoreAtlterTableOptionsFunctionCall(stmt);
+	if (funcCall == NULL)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+
+static void
+RewriteCStoreAlterTableOptionsFunctionCallForShard(SelectStmt *stmt, char *schemaName,
+												   uint64 shardId)
+{
+	FuncCall *funcCall = ExtractCStoreAtlterTableOptionsFunctionCall(stmt);
+
+	/* We have already checked we have a func call, assert instead of check */
+	Assert(funcCall != NULL);
+
+	if (list_length(funcCall->args) < 1)
+	{
+		/* no first argument, nothing to update */
+		return;
+	}
+
+	Node *tableNameArgument = linitial(funcCall->args);
+	if (!IsA(tableNameArgument, A_Const))
+	{
+		/* first argument is not a constant, no reason to apply shardid if not constant */
+		return;
+	}
+
+	A_Const *tableNameConst = castNode(A_Const, tableNameArgument);
+	if (!IsA(&tableNameConst->val, String))
+	{
+		/* not a string constant, probablyb not a valid name to add the shard id to */
+		return;
+	}
+
+	/* here we know we are mutating the table name argument */
+
+	Value *tableNameString = &tableNameConst->val;
+	char *originalTableName = strVal(tableNameString);
+	List *originalTableNameList = stringToQualifiedNameList(originalTableName);
+
+	RangeVar *rangeVar = makeRangeVarFromNameList(originalTableNameList);
+
+	/* finally we have the relation name to append the shardid to, inplace */
+	AppendShardIdToName(&rangeVar->relname, shardId);
+
+	List *newTableNameList = MakeNameListFromRangeVar(rangeVar);
+	char *newTableName = NameListToQuotedString(newTableNameList);
+
+	/* allocate the string in the same namespace as the constant */
+	MemoryContext constMemoryContext = GetMemoryChunkContext(tableNameConst);
+	newTableName = MemoryContextStrdup(constMemoryContext, newTableName);
+
+	/* replace the original pointer in the constant */
+	tableNameString->val.str = newTableName;
+}
+
+
+/*
+ * ExecuteCitusDDLFunction has a small list of allowed functions that can be called. For
+ * security and simplicity reasons we will not pass them through the postgres planner and
+ * executor, instead we implement the execution of these functions inline, parsing their
+ * arguments as we expect them or throw an error.
+ */
+void
+ExecuteCitusDDLFunction(SelectStmt *stmt)
+{
+	if (IsCstoreAlterTableOptionsFunctionCall(stmt))
+	{
+		/* alter_cstore_table_set function call*/
+		FuncCall *funcCall = ExtractCStoreAtlterTableOptionsFunctionCall(stmt);
+
+		Assert(funcCall != NULL);
+
+		if (list_length(funcCall->args) <= 0)
+		{
+			ereport(ERROR, (errmsg("missing arguments to citus ddl function call")));
+		}
+
+		Node *tableNameNode = linitial(funcCall->args);
+		if (!IsA(tableNameNode, A_Const) ||
+			!IsA(&castNode(A_Const, tableNameNode)->val, String))
+		{
+			ereport(ERROR, (errmsg("unsupported arguments to citus ddl function call")));
+		}
+
+		/* direct function call, but we have NULL values to set, yay! */
+		LOCAL_FCINFO(fcinfo, 4);
+
+		InitFunctionCallInfoData(*fcinfo, NULL, 4, InvalidOid, NULL, NULL);
+
+		/* table_name */
+		char *tableName = strVal(&castNode(A_Const, tableNameNode)->val);
+		List *tableNameList = stringToQualifiedNameList(tableName);
+		RangeVar *rangeVar = makeRangeVarFromNameList(tableNameList);
+		Oid tableOid = RangeVarGetRelid(rangeVar, AccessShareLock, false);
+		fcSetArg(fcinfo, 0, ObjectIdGetDatum(tableOid));
+
+		/* preload all arguments with NULL */
+		fcSetArgNull(fcinfo, 1);
+		fcSetArgNull(fcinfo, 2);
+		fcSetArgNull(fcinfo, 3);
+
+		Node *argNode = NULL;
+		bool first = true;
+		foreach_ptr(argNode, funcCall->args)
+		{
+			if (first)
+			{
+				/* skip parsing of the first argument as we have already parsed it */
+				first = false;
+				continue;
+			}
+
+			if (!IsA(argNode, NamedArgExpr))
+			{
+				ereport(ERROR, (errmsg(
+									"unsupported arguments to citus ddl function call")));
+			}
+
+			NamedArgExpr *arg = castNode(NamedArgExpr, argNode);
+			if (strncmp(arg->name, "block_row_count", 15) == 0)
+			{
+				if (!IsA(arg->arg, A_Const) ||
+					!IsA(&castNode(A_Const, arg->arg)->val, Integer))
+				{
+					ereport(ERROR, (errmsg(
+										"unsupported arguments to citus ddl function call")));
+				}
+
+				int block_row_count = intVal(&castNode(A_Const, arg->arg)->val);
+
+				fcSetArg(fcinfo, 1, Int32GetDatum(block_row_count));
+			}
+			else if (strncmp(arg->name, "stripe_row_count", 16) == 0)
+			{
+				if (!IsA(arg->arg, A_Const) ||
+					!IsA(&castNode(A_Const, arg->arg)->val, Integer))
+				{
+					ereport(ERROR, (errmsg(
+										"unsupported arguments to citus ddl function call")));
+				}
+
+				int stripe_row_count = intVal(&castNode(A_Const, arg->arg)->val);
+
+				fcSetArg(fcinfo, 2, Int32GetDatum(stripe_row_count));
+			}
+			else if (strncmp(arg->name, "compression", 11) == 0)
+			{
+				if (!IsA(arg->arg, A_Const) ||
+					!IsA(&castNode(A_Const, arg->arg)->val, String))
+				{
+					ereport(ERROR, (errmsg(
+										"unsupported arguments to citus ddl function call")));
+				}
+
+				char *compression = strVal(&castNode(A_Const, arg->arg)->val);
+				NameData compressionName = { 0 };
+
+				namestrcpy(&compressionName, compression);
+
+				fcSetArg(fcinfo, 3, NameGetDatum(&compressionName));
+			}
+			else
+			{
+				ereport(ERROR, (errmsg(
+									"unsupported arguments to citus ddl function call")));
+			}
+		}
+
+		/* invoke function */
+		alter_cstore_table_set(fcinfo);
+	}
+	else
+	{
+		ereport(ERROR, (errmsg("unsupported citus ddl function call")));
 	}
 }
 
