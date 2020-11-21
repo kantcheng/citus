@@ -459,6 +459,7 @@ FlushStripe(TableWriteState *writeState)
 			blockSkipNode->valueBlockOffset = stripeSize;
 			blockSkipNode->valueLength = valueBufferSize;
 			blockSkipNode->valueCompressionType = valueCompressionType;
+			blockSkipNode->uncompressedValueSize = blockBuffers->uncompressedValueSize;
 
 			stripeSize += valueBufferSize;
 		}
@@ -627,20 +628,23 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 
 		StringInfo serializedValueBuffer = blockData->valueBufferArray[columnIndex];
 
-		/* the only other supported compression type is pg_lz for now */
-		Assert(requestedCompressionType == COMPRESSION_NONE ||
-			   requestedCompressionType == COMPRESSION_PG_LZ);
+		Assert(requestedCompressionType >= 0 &&
+			   requestedCompressionType < COMPRESSION_COUNT);
+		
+		blockBuffers->uncompressedValueSize =
+			blockData->valueBufferArray[columnIndex]->len;
 
 		/*
 		 * if serializedValueBuffer is be compressed, update serializedValueBuffer
 		 * with compressed data and store compression type.
 		 */
+		serializedValueBuffer = blockData->valueBufferArray[columnIndex];
 		bool compressed = CompressBuffer(serializedValueBuffer, compressionBuffer,
 										 requestedCompressionType);
 		if (compressed)
 		{
 			serializedValueBuffer = compressionBuffer;
-			actualCompressionType = COMPRESSION_PG_LZ;
+			actualCompressionType = requestedCompressionType;
 		}
 
 		/* store (compressed) value buffer */

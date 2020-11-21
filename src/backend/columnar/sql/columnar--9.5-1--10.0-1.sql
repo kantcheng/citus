@@ -43,6 +43,7 @@ CREATE TABLE cstore_skipnodes (
     exists_stream_offset bigint NOT NULL,
     exists_stream_length bigint NOT NULL,
     value_compression_type int NOT NULL,
+    value_uncompressed_length bigint NOT NULL,
     PRIMARY KEY (relfilenode, stripe, attr, block),
     FOREIGN KEY (relfilenode, stripe) REFERENCES cstore_stripes(relfilenode, stripe) ON DELETE CASCADE INITIALLY DEFERRED
 ) WITH (user_catalog_table = true);

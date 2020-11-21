@@ -143,7 +143,7 @@ VACUUM VERBOSE t;
 INFO:  statistics for "t":
 total file size: 114688, total data size: 10754
 total row count: 2530, stripe count: 3, average rows per stripe: 843
-block count: 3, containing data for dropped columns: 0, none compressed: 3, pglz compressed: 0
+block count: 3, containing data for dropped columns: 0, none compressed: 3, pglz compressed: 0, lz4 compressed: 0
 
 INFO:  "t": truncated 14 to 4 pages
 DETAIL:  CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
@@ -190,7 +190,7 @@ VACUUM VERBOSE t;
 INFO:  statistics for "t":
 total file size: 49152, total data size: 18808
 total row count: 5530, stripe count: 5, average rows per stripe: 1106
-block count: 7, containing data for dropped columns: 0, none compressed: 5, pglz compressed: 2
+block count: 7, containing data for dropped columns: 0, none compressed: 5, pglz compressed: 2, lz4 compressed: 0
 
 SELECT count(*) FROM t;
  count
@@ -206,7 +206,7 @@ VACUUM VERBOSE t;
 INFO:  statistics for "t":
 total file size: 65536, total data size: 31372
 total row count: 7030, stripe count: 6, average rows per stripe: 1171
-block count: 11, containing data for dropped columns: 2, none compressed: 9, pglz compressed: 2
+block count: 11, containing data for dropped columns: 2, none compressed: 9, pglz compressed: 2, lz4 compressed: 0
 
 -- vacuum full should remove blocks for dropped columns
 -- note that, a block will be stored in non-compressed for if compression
@@ -222,7 +222,7 @@ VACUUM VERBOSE t;
 INFO:  statistics for "t":
 total file size: 49152, total data size: 15728
 total row count: 7030, stripe count: 4, average rows per stripe: 1757
-block count: 8, containing data for dropped columns: 0, none compressed: 2, pglz compressed: 6
+block count: 8, containing data for dropped columns: 0, none compressed: 2, pglz compressed: 6, lz4 compressed: 0
 
 DROP TABLE t;
 -- Make sure we cleaned the metadata for t too

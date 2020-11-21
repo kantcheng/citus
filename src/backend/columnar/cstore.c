@@ -35,6 +35,7 @@ static const struct config_enum_entry cstore_compression_options[] =
 {
 	{ "none", COMPRESSION_NONE, false },
 	{ "pglz", COMPRESSION_PG_LZ, false },
+	{ "lz4", COMPRESSION_LZ4, false },
 	{ NULL, 0, false }
 };
 
@@ -85,17 +86,33 @@ cstore_init()
 CompressionType
 ParseCompressionType(const char *compressionTypeString)
 {
-	CompressionType compressionType = COMPRESSION_TYPE_INVALID;
 	Assert(compressionTypeString != NULL);
 
-	if (strncmp(compressionTypeString, COMPRESSION_STRING_NONE, NAMEDATALEN) == 0)
+	for (int type = 0; type < COMPRESSION_COUNT; type++)
 	{
-		compressionType = COMPRESSION_NONE;
-	}
-	else if (strncmp(compressionTypeString, COMPRESSION_STRING_PG_LZ, NAMEDATALEN) == 0)
-	{
-		compressionType = COMPRESSION_PG_LZ;
+		if (strncmp(compressionTypeString, cstore_compression_options[type].name,
+					NAMEDATALEN) == 0)
+		{
+			return type;
+		}
 	}
 
-	return compressionType;
+	return COMPRESSION_TYPE_INVALID;
+}
+
+
+/*
+ * CompressionTypeStr returns string representation of a compression type.
+ */
+const char *
+CompressionTypeStr(CompressionType type)
+{
+	if (type >= 0 && type < COMPRESSION_COUNT)
+	{
+		return cstore_compression_options[type].name;
+	}
+	else
+	{
+		return "invalid";
+	}
 }

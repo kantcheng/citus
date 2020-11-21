@@ -109,7 +109,7 @@ typedef FormData_cstore_data_files *Form_cstore_data_files;
 #define Anum_cstore_stripes_row_count 8
 
 /* constants for cstore_skipnodes */
-#define Natts_cstore_skipnodes 12
+#define Natts_cstore_skipnodes 13
 #define Anum_cstore_skipnodes_relfilenode 1
 #define Anum_cstore_skipnodes_stripe 2
 #define Anum_cstore_skipnodes_attr 3
@@ -122,6 +122,7 @@ typedef FormData_cstore_data_files *Form_cstore_data_files;
 #define Anum_cstore_skipnodes_exists_stream_offset 10
 #define Anum_cstore_skipnodes_exists_stream_length 11
 #define Anum_cstore_skipnodes_value_compression_type 12
+#define Anum_cstore_skipnodes_value_uncompressed_size 13
 
 
 /*
@@ -272,7 +273,8 @@ SaveStripeSkipList(Oid relfilenode, uint64 stripe, StripeSkipList *stripeSkipLis
 				Int64GetDatum(skipNode->valueLength),
 				Int64GetDatum(skipNode->existsBlockOffset),
 				Int64GetDatum(skipNode->existsLength),
-				Int32GetDatum(skipNode->valueCompressionType)
+				Int32GetDatum(skipNode->valueCompressionType),
+				Int64GetDatum(skipNode->uncompressedValueSize)
 			};
 
 			bool nulls[Natts_cstore_skipnodes] = { false };
@@ -376,6 +378,8 @@ ReadStripeSkipList(Oid relfilenode, uint64 stripe, TupleDesc tupleDescriptor,
 			DatumGetInt64(datumArray[Anum_cstore_skipnodes_exists_stream_length - 1]);
 		skipNode->valueCompressionType =
 			DatumGetInt32(datumArray[Anum_cstore_skipnodes_value_compression_type - 1]);
+		skipNode->uncompressedValueSize =
+			DatumGetInt64(datumArray[Anum_cstore_skipnodes_value_uncompressed_size - 1]);
 
 		if (isNullArray[Anum_cstore_skipnodes_minimum_value - 1] ||
 			isNullArray[Anum_cstore_skipnodes_maximum_value - 1])

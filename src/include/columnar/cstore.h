@@ -56,6 +56,7 @@ typedef enum
 	COMPRESSION_TYPE_INVALID = -1,
 	COMPRESSION_NONE = 0,
 	COMPRESSION_PG_LZ = 1,
+	COMPRESSION_LZ4 = 2,
 
 	COMPRESSION_COUNT
 } CompressionType;
@@ -119,6 +120,8 @@ typedef struct ColumnBlockSkipNode
 	uint64 existsBlockOffset;
 	uint64 existsLength;
 
+	uint64 uncompressedValueSize;
+
 	CompressionType valueCompressionType;
 } ColumnBlockSkipNode;
 
@@ -172,6 +175,7 @@ typedef struct ColumnBlockBuffers
 	StringInfo existsBuffer;
 	StringInfo valueBuffer;
 	CompressionType valueCompressionType;
+	uint64 uncompressedValueSize;
 } ColumnBlockBuffers;
 
 
@@ -250,6 +254,7 @@ extern int cstore_block_row_count;
 extern void cstore_init(void);
 
 extern CompressionType ParseCompressionType(const char *compressionTypeString);
+extern const char * CompressionTypeStr(CompressionType type);
 
 /* Function declarations for writing to a cstore file */
 extern TableWriteState * CStoreBeginWrite(RelFileNode relfilenode,
@@ -282,8 +287,8 @@ extern void FreeBlockData(BlockData *blockData);
 extern uint64 CStoreTableRowCount(Relation relation);
 extern bool CompressBuffer(StringInfo inputBuffer, StringInfo outputBuffer,
 						   CompressionType compressionType);
-extern StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
-extern char * CompressionTypeStr(CompressionType type);
+extern StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType,
+								   uint64 decompressedSize);
 extern CStoreOptions * CStoreTableAMGetOptions(Oid relfilenode);
 
 /* cstore_metadata_tables.c */

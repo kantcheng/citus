@@ -7,7 +7,7 @@ jobs:
 
   build-11:
     docker:
-      - image: 'citus/extbuilder:11.9'
+      - image: 'citus/extbuilder:11-dev20201030'
     steps:
       - checkout
       - run:
@@ -21,7 +21,7 @@ jobs:
 
   build-12:
     docker:
-      - image: 'citus/extbuilder:12.4'
+      - image: 'citus/extbuilder:12-dev20201030'
     steps:
       - checkout
       - run:
@@ -35,7 +35,7 @@ jobs:
 
   build-13:
     docker:
-      - image: 'citus/extbuilder:13.0'
+      - image: 'citus/extbuilder:13-dev20201102'
     steps:
       - checkout
       - run:

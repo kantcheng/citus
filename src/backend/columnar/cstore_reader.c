@@ -462,6 +462,8 @@ LoadColumnBuffers(Relation relation, ColumnBlockSkipNode *blockSkipNodeArray,
 
 		blockBuffersArray[blockIndex]->valueBuffer = rawValueBuffer;
 		blockBuffersArray[blockIndex]->valueCompressionType = compressionType;
+		blockBuffersArray[blockIndex]->uncompressedValueSize =
+			blockSkipNode->uncompressedValueSize;
 	}
 
 	ColumnBuffers *columnBuffers = palloc0(sizeof(ColumnBuffers));
@@ -918,8 +920,10 @@ DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 				columnBuffers->blockBuffersArray[blockIndex];
 
 			/* decompress and deserialize current block's data */
-			StringInfo valueBuffer = DecompressBuffer(blockBuffers->valueBuffer,
-													  blockBuffers->valueCompressionType);
+			StringInfo valueBuffer =
+				DecompressBuffer(blockBuffers->valueBuffer,
+								 blockBuffers->valueCompressionType,
+								 blockBuffers->uncompressedValueSize);
 
 			if (blockBuffers->valueCompressionType != COMPRESSION_NONE)
 			{
