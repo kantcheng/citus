@@ -245,6 +245,13 @@ FROM
 WHERE
 	postgres_table.key = d1.key AND d1.key = d2.key;
 
+-- currently can't plan subquery-local table join
+SELECT count(*) 
+FROM 
+	(SELECT * FROM (SELECT * FROM distributed_table) d1) d2
+JOIN postgres_table
+USING(key);
+
 
 
 ---------------------------------------------------------
