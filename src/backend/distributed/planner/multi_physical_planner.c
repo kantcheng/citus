@@ -3588,6 +3588,80 @@ NodeIsRangeTblRefReferenceTable(Node *node, List *rangeTableList)
 	return IsCitusTableType(rangeTableEntry->relid, REFERENCE_TABLE);
 }
 
+// List* FetchAttributeNumsForRTEFromQuals(Node* qualsNode, int RTEIndex) {
+// 	List* quals = make_ands_implicit((Expr*) qualsNode);
+// 	List* attributeNums = NIL;
+// 	Node *qual = NULL;
+// 	foreach_ptr(qual, quals)
+// 	{
+// 		if (!NodeIsEqualsOpExpr(qual))
+// 		{
+// 			continue;
+// 		}
+
+// 		OpExpr *nextJoinClauseOpExpr = castNode(OpExpr, qual);
+
+// 		Var *leftColumn = LeftColumnOrNULL(nextJoinClauseOpExpr);
+// 		Var *rightColumn = RightColumnOrNULL(nextJoinClauseOpExpr);
+
+// 		if (leftColumn && leftColumn->varno == RTEIndex) {
+// 			attributeNums = lappend_int(attributeNums, leftColumn->varattno);
+// 		}
+
+// 		if (rightColumn && rightColumn->varno == RTEIndex) {
+// 			attributeNums = lappend_int(attributeNums, rightColumn->varattno);
+// 		}
+// 	}
+// 	return attributeNums;
+// }
+
+void FetchAttributeNumsForRTEFromQuals(Node* quals, Index rteIndex, List** attributeNums) {
+	if (quals == NULL)
+	{
+		return;
+	}
+
+	if (IsA(quals, OpExpr))
+	{
+		if (!NodeIsEqualsOpExpr(quals))
+		{
+			return;
+		}
+		OpExpr *nextJoinClauseOpExpr = castNode(OpExpr, quals);
+
+		Var *leftColumn = LeftColumnOrNULL(nextJoinClauseOpExpr);
+		Var *rightColumn = RightColumnOrNULL(nextJoinClauseOpExpr);
+
+		if (leftColumn && leftColumn->varno == rteIndex) {
+			*attributeNums = lappend_int(*attributeNums, leftColumn->varattno);
+		}
+
+		if (rightColumn && rightColumn->varno == rteIndex) {
+			*attributeNums = lappend_int(*attributeNums, rightColumn->varattno);
+		}
+
+	}
+	else if (IsA(quals, BoolExpr))
+	{
+		BoolExpr *boolExpr = (BoolExpr *) quals;
+
+		/*
+		 * We do not descend into boolean expressions other than AND.
+		 * If the column filter appears in an OR clause, we do not
+		 * consider it even if it is logically the same as a single value
+		 * comparison (e.g. `<column> = <Const> OR false`)
+		 */
+		if (boolExpr->boolop != AND_EXPR)
+		{
+			return;
+		}
+		Node* arg = NULL;
+		foreach_ptr(arg, boolExpr->args)
+		{
+			FetchAttributeNumsForRTEFromQuals(arg, rteIndex, attributeNums);
+		}
+	}
+}
 
 /*
  * JoinSequenceArray walks over the join nodes in the job query and constructs a join
