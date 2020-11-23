@@ -1423,6 +1423,42 @@ ContainsLocalTableDistributedTableJoin(List *rangeTableList)
 
 
 /*
+ * ContainsLocalTableSubqueryJoin returns true if the input range table list
+ * contains a direct join between local table/citus local table and subquery.
+ */
+bool
+ContainsLocalTableSubqueryJoin(List *rangeTableList)
+{
+	bool containsLocalTable = false;
+	bool containsSubquery = false;
+
+	ListCell *rangeTableCell = NULL;
+	foreach(rangeTableCell, rangeTableList)
+	{
+		RangeTblEntry *rangeTableEntry = (RangeTblEntry *) lfirst(rangeTableCell);
+
+		if (rangeTableEntry->rtekind == RTE_SUBQUERY) {
+			containsSubquery = true;
+		}
+		/* we're only interested in tables */
+		/* TODO:: What about partitioned tables? */
+		if (!(rangeTableEntry->rtekind == RTE_RELATION &&
+			  rangeTableEntry->relkind == RELKIND_RELATION))
+		{
+			continue;
+		}
+
+		if (IsCitusTableType(rangeTableEntry->relid, CITUS_LOCAL_TABLE) || !IsCitusTable(rangeTableEntry->relid))
+		{
+			/* we consider citus local tables as local table */
+			containsLocalTable = true;
+		}
+	}
+
+	return containsLocalTable && containsSubquery;
+}
+
+/*
  * WrapFunctionsInSubqueries iterates over all the immediate Range Table Entries
  * of a query and wraps the functions inside (SELECT * FROM fnc() f)
  * subqueries, so that those functions will be executed on the coordinator if

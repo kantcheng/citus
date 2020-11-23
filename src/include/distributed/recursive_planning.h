@@ -63,6 +63,7 @@ extern bool ContainsLocalTableDistributedTableJoin(List *rangeTableList);
 extern void ReplaceRTERelationWithRteSubquery(RangeTblEntry *rangeTableEntry,
 											  List *restrictionList,
 											  List *requiredAttrNumbers);
-
+extern bool
+ContainsLocalTableSubqueryJoin(List *rangeTableList);
 
 #endif /* RECURSIVE_PLANNING_H */
