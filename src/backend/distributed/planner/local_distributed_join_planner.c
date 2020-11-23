@@ -68,7 +68,7 @@ typedef struct RTEToSubqueryConverterContext{
 	bool hasSubqueryRTE;
 }RTEToSubqueryConverterContext;
 
-static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList);
+static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList, Oid resultRelationId);
 static bool HasUniqueFilter(RangeTblEntry* distRTE, List* distRTERestrictionList, List* requiredAttrNumbersForDistRTE);
 static bool AutoConvertLocalTableJoinToSubquery(FromExpr* joinTree,
  RTEToSubqueryConverterReference* distRTEContext);
@@ -76,7 +76,6 @@ static List * RequiredAttrNumbersForRelation(RangeTblEntry *relationRte,
 											 RecursivePlanningContext *planningContext);
 static RTEToSubqueryConverterContext * CreateRTEToSubqueryConverterContext(RecursivePlanningContext *context,
 				List *rangeTableList);
-static bool AllDataLocallyAccessible(List *rangeTableList);
 static void GetAllUniqueIndexes(Form_pg_index indexForm, List** uniqueIndexes);
 static bool ContainsLocalAndNonLocalTableJoin(RTEToSubqueryConverterContext* rteToSubqueryConverterContext);
 static RTEToSubqueryConverterReference* 
@@ -99,13 +98,17 @@ ConvertLocalTableJoinsToSubqueries(Query *query,
 								   RecursivePlanningContext *context)
 {
 	List *rangeTableList = query->rtable;
-	if (!ShouldConvertLocalTableJoinsToSubqueries(rangeTableList)) {
+	RangeTblEntry *resultRelation = ExtractResultRelationRTE(query);
+	Oid resultRelationId = InvalidOid;
+	if (resultRelation) {
+		resultRelationId = resultRelation->relid;
+	}
+	if (!ShouldConvertLocalTableJoinsToSubqueries(rangeTableList, resultRelationId)) {
 		return;
 	}
 	RTEToSubqueryConverterContext* rteToSubqueryConverterContext = CreateRTEToSubqueryConverterContext(
 		context, rangeTableList);
 
-	RangeTblEntry *resultRelation = ExtractResultRelationRTE(query);
 
 	RTEToSubqueryConverterReference* rteToSubqueryConverterReference = 
 			GetNextRTEToConvertToSubquery(query->jointree, rteToSubqueryConverterContext,
@@ -142,7 +145,7 @@ static RTEToSubqueryConverterReference*
 	if (list_length(rteToSubqueryConverterContext->distributedTableList) > 0) {
 		nonLocalRTECandidate = linitial(rteToSubqueryConverterContext->distributedTableList);
 	}
-	if (nonLocalRTECandidate == NULL) {
+	if (nonLocalRTECandidate == NULL && !rteToSubqueryConverterContext->hasSubqueryRTE) {
 		return NULL;
 	}
 
@@ -205,19 +208,13 @@ static void PopFromRTEToSubqueryConverterContext(RTEToSubqueryConverterContext* 
  * ShouldConvertLocalTableJoinsToSubqueries returns true if we should
  * convert local-dist table joins to subqueries.
  */
-static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList) {
+static bool ShouldConvertLocalTableJoinsToSubqueries(List* rangeTableList, Oid resultRelationId) {
 	if (LocalTableJoinPolicy == LOCAL_JOIN_POLICY_NEVER)
 	{
 		/* user doesn't want Citus to enable local table joins */
 		return false;
 	}
-	if (!ContainsLocalTableDistributedTableJoin(rangeTableList) && !ContainsLocalTableSubqueryJoin(rangeTableList)) {
-		return false;
-	}
-
-	if (AllDataLocallyAccessible(rangeTableList))
-	{
-		/* recursively planning is overkill, router planner can already handle this */
+	if (!ContainsTableToBeConvertedToSubquery(rangeTableList, resultRelationId)) {
 		return false;
 	}
 	return true;
@@ -288,7 +285,7 @@ RequiredAttrNumbersForRelation(RangeTblEntry *relationRte,
 		filteredPlannerRestrictionContext->relationRestrictionContext;
 	List *filteredRelationRestrictionList =
 		relationRestrictionContext->relationRestrictionList;
-		
+
 	if (list_length(filteredRelationRestrictionList) == 0) {
 		return NIL;
 	}
@@ -369,55 +366,4 @@ CreateRTEToSubqueryConverterContext(RecursivePlanningContext *context,
 		}
 	}
 	return rteToSubqueryConverterContext;
-}
-
-/*
- * AllDataLocallyAccessible return true if all data for the relations in the
- * rangeTableList is locally accessible.
- */
-static bool
-AllDataLocallyAccessible(List *rangeTableList)
-{
-	RangeTblEntry* rangeTableEntry = NULL;
-	foreach_ptr(rangeTableEntry, rangeTableList)
-	{
-		if (rangeTableEntry->rtekind == RTE_SUBQUERY) {
-			// TODO:: check if it has distributed table
-			return false;
-		}
-		/* we're only interested in tables */
-		if (!(rangeTableEntry->rtekind == RTE_RELATION &&
-			  rangeTableEntry->relkind == RELKIND_RELATION))
-		{
-			continue;
-		}
-
-
-		Oid relationId = rangeTableEntry->relid;
-
-		if (!IsCitusTable(relationId))
-		{
-			/* local tables are locally accessible */
-			continue;
-		}
-
-		List *shardIntervalList = LoadShardIntervalList(relationId);
-		if (list_length(shardIntervalList) != 1)
-		{
-			/* we currently only consider single placement tables */
-			return false;
-		}
-
-		ShardInterval *shardInterval = linitial(shardIntervalList);
-		uint64 shardId = shardInterval->shardId;
-		ShardPlacement *localShardPlacement =
-			ShardPlacementOnGroup(shardId, GetLocalGroupId());
-		if (localShardPlacement == NULL)
-		{
-			/* the table doesn't have a placement on this node */
-			return false;
-		}
-	}
-
-	return true;
 }

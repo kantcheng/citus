@@ -163,6 +163,7 @@ static bool ShouldRecursivelyPlanSubquery(Query *subquery,
 static bool AllDistributionKeysInSubqueryAreEqual(Query *subquery,
 												  PlannerRestrictionContext *
 												  restrictionContext);
+static bool AllDataLocallyAccessible(List *rangeTableList);												  
 static bool ShouldRecursivelyPlanSetOperation(Query *query,
 											  RecursivePlanningContext *context);
 static void RecursivelyPlanSetOperations(Query *query, Node *node,
@@ -184,6 +185,7 @@ static Query * BuildReadIntermediateResultsQuery(List *targetEntryList,
 												 List *columnAliasList,
 												 Const *resultIdConst, Oid functionOid,
 												 bool useBinaryCopyFormat);
+
 /*
  * GenerateSubplansForSubqueriesAndCTEs is a wrapper around RecursivelyPlanSubqueriesAndCTEs.
  * The function returns the subplans if necessary. For the details of when/how subplans are
@@ -1383,6 +1385,64 @@ ReplaceRTERelationWithRteSubquery(RangeTblEntry *rangeTableEntry, List *restrict
 	}
 }
 
+bool ContainsTableToBeConvertedToSubquery(List* rangeTableList, Oid resultRelationId) {
+	if (AllDataLocallyAccessible(rangeTableList)) {
+		return false;
+	}
+	return ContainsLocalTableDistributedTableJoin(rangeTableList) || 
+		ContainsLocalTableSubqueryJoin(rangeTableList, resultRelationId);
+}
+
+/*
+ * AllDataLocallyAccessible return true if all data for the relations in the
+ * rangeTableList is locally accessible.
+ */
+static bool
+AllDataLocallyAccessible(List *rangeTableList)
+{
+	RangeTblEntry* rangeTableEntry = NULL;
+	foreach_ptr(rangeTableEntry, rangeTableList)
+	{
+		if (rangeTableEntry->rtekind == RTE_SUBQUERY) {
+			// TODO:: check if it has distributed table
+			return false;
+		}
+		/* we're only interested in tables */
+		if (!(rangeTableEntry->rtekind == RTE_RELATION &&
+			  rangeTableEntry->relkind == RELKIND_RELATION))
+		{
+			continue;
+		}
+
+
+		Oid relationId = rangeTableEntry->relid;
+
+		if (!IsCitusTable(relationId))
+		{
+			/* local tables are locally accessible */
+			continue;
+		}
+
+		List *shardIntervalList = LoadShardIntervalList(relationId);
+		if (list_length(shardIntervalList) != 1)
+		{
+			/* we currently only consider single placement tables */
+			return false;
+		}
+
+		ShardInterval *shardInterval = linitial(shardIntervalList);
+		uint64 shardId = shardInterval->shardId;
+		ShardPlacement *localShardPlacement =
+			ShardPlacementOnGroup(shardId, GetLocalGroupId());
+		if (localShardPlacement == NULL)
+		{
+			/* the table doesn't have a placement on this node */
+			return false;
+		}
+	}
+
+	return true;
+}
 
 /*
  * ContainsLocalTableDistributedTableJoin returns true if the input range table list
@@ -1411,7 +1471,7 @@ ContainsLocalTableDistributedTableJoin(List *rangeTableList)
 		{
 			containsDistributedTable = true;
 		}
-		else
+		else if (IsCitusTableType(rangeTableEntry->relid, CITUS_LOCAL_TABLE) || !IsCitusTable(rangeTableEntry->relid))
 		{
 			/* we consider citus local tables as local table */
 			containsLocalTable = true;
@@ -1427,7 +1487,7 @@ ContainsLocalTableDistributedTableJoin(List *rangeTableList)
  * contains a direct join between local table/citus local table and subquery.
  */
 bool
-ContainsLocalTableSubqueryJoin(List *rangeTableList)
+ContainsLocalTableSubqueryJoin(List *rangeTableList, Oid resultRelationId)
 {
 	bool containsLocalTable = false;
 	bool containsSubquery = false;
@@ -1448,9 +1508,8 @@ ContainsLocalTableSubqueryJoin(List *rangeTableList)
 			continue;
 		}
 
-		if (IsCitusTableType(rangeTableEntry->relid, CITUS_LOCAL_TABLE) || !IsCitusTable(rangeTableEntry->relid))
+		if (!IsCitusTable(rangeTableEntry->relid) && rangeTableEntry->relid != resultRelationId)
 		{
-			/* we consider citus local tables as local table */
 			containsLocalTable = true;
 		}
 	}
