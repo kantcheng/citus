@@ -29,10 +29,11 @@ END$proc$;
 
 DROP TABLE cstore_skipnodes;
 DROP TABLE cstore_stripes;
-DROP TABLE cstore_data_files;
 DROP TABLE options;
+DROP SEQUENCE cstore_storageid_seq;
 
 DROP FUNCTION citus_internal.cstore_ensure_objects_exist();
+DROP FUNCTION columnar_relation_storageid(oid);
 
 RESET search_path;
 DROP SCHEMA cstore;
