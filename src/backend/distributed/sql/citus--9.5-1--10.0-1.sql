@@ -9,10 +9,12 @@
 CREATE VIEW public.citus_tables AS
 SELECT
   logicalrelid AS table_name,
-  CASE WHEN partkey IS NOT NULL THEN 'distributed' WHEN repmodel = 't' THEN 'reference' ELSE 'local' END AS table_type,
+  CASE WHEN partkey IS NOT NULL THEN 'distributed' WHEN repmodel = 't' THEN 'reference' ELSE 'local' END AS citus_table_type,
   column_to_column_name(logicalrelid, partkey) AS distribution_column,
+  colocationid AS colocation_id,
   pg_size_pretty(citus_total_relation_size(logicalrelid)) AS table_size,
   (select count(*) from pg_dist_shard where logicalrelid = p.logicalrelid) AS shard_count,
+  pg_get_userbyid(relowner) AS table_owner,
   amname AS access_method
 FROM
   pg_dist_partition p
